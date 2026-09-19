@@ -147,7 +147,11 @@
     const r=e.getBoundingClientRect(), rname=role(e);
     if (!rname || !cache.point(e)) continue;
     if (rname==='gridcell' && e.querySelector('button,[role="button"]')) continue;
-    const base={node:identity(e),role:rname,label:name(e)||rname,
+    // A form's submit button looks like any other button by name, and on a foreign-language site its name alone
+    // (NS: "Plannen" next to a "Toon Reisopties" toggle) does not say which one sends the form.
+    const submits=rname==='button' && e.form && ['BUTTON','INPUT'].includes(e.tagName) &&
+      ['submit','image'].includes(e.type);
+    const base={node:identity(e),role:submits?'submit button':rname,label:name(e)||rname,
       rect:{x:r.x,y:r.y,w:r.width,h:r.height}};
     for (const key of ['checked','selected','expanded']) {
       const value=e.getAttribute('aria-'+key);

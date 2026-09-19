@@ -312,6 +312,104 @@ def test_text_helper_rejects_invalid_values(monkeypatch, content):
         model.field_text({"goal": "Find a flight"})
 
 
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [('{"question":true,"answer":"It is 14 degrees and cloudy in Utrecht."}',
+      "It is 14 degrees and cloudy in Utrecht."),
+     ('{"question":false,"answer":null}', None),
+     # An action request stays silent even when the helper summarises the page anyway.
+     ('{"question":false,"answer":"The Eiffel Tower is 330 m tall."}', None)],
+)
+def test_answer_helper_returns_an_answer_or_none_for_an_action(monkeypatch, content, expected):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    post = Mock(return_value={"choices": [{"message": {"content": content}}]})
+    monkeypatch.setattr(model, "post_json", post)
+    context = model.answer_context("weather in Utrecht", page(), [])
+    assert model.spoken_answer(context)[0] == expected
+    body = post.call_args.args[2]
+    assert body["messages"][0]["content"] == model.ANSWER
+    assert json.loads(body["messages"][1]["content"])["request"] == "weather in Utrecht"
+
+
+@pytest.mark.parametrize("content", [
+    "It is 14 degrees", '{"answer":"14 degrees"}', '{"question":true,"answer":" "}', '{"question":true,"answer":1}',
+    '{"question":"yes","answer":"14 degrees"}', '{"question":true,"answer":null}',
+])
+def test_answer_helper_rejects_invalid_answers(monkeypatch, content):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    monkeypatch.setattr(model, "post_json", Mock(return_value={"choices": [{"message": {"content": content}}]}))
+    with pytest.raises(ValueError, match="no valid answer"):
+        model.spoken_answer({"request": "weather in Utrecht"})
+
+
+def test_answers_use_their_own_model_and_fall_back_to_the_text_model(monkeypatch):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    monkeypatch.setenv("TEXT_MODEL", "small")
+    post = Mock(return_value={"choices": [{"message": {"content": '{"question":false,"answer":null}'}}]})
+    monkeypatch.setattr(model, "post_json", post)
+    monkeypatch.delenv("ANSWER_MODEL", raising=False)
+    model.spoken_answer({"request": "open it"})
+    monkeypatch.setenv("ANSWER_MODEL", "reader")
+    monkeypatch.setenv("ANSWER_MODEL_REASONING", "none")
+    model.spoken_answer({"request": "open it"})
+    bodies = [call.args[2] for call in post.call_args_list]
+    assert [b["model"] for b in bodies] == ["small", "reader"]
+    assert bodies[1]["reasoning"] == {"enabled": False}
+
+
+def test_an_empty_helper_reply_is_asked_once_more(monkeypatch):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    empty = {"choices": [{"message": {"content": None}}]}
+    post = Mock(side_effect=[empty, {"choices": [{"message": {"content": '{"text":"Utrecht"}'}}]}])
+    monkeypatch.setattr(model, "post_json", post)
+    assert model.field_text({"goal": "train from Utrecht"})[0] == "Utrecht"
+    post.side_effect = [empty, empty]
+    with pytest.raises(ValueError, match="nothing typed"):
+        model.field_text({"goal": "train from Utrecht"})
+
+
+def done(runner):
+    runner.state["browser"].document_text.return_value = "Utrecht weather: 14 °C, cloudy"
+    runner.state.update(plan=["weather in Utrecht"], plan_index=0, decision={**decision("DONE"), "operation": "DONE"})
+    return runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+
+
+def test_done_reads_the_answer_from_the_finished_page(runner, monkeypatch):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    helper = Mock(return_value=("14 degrees and cloudy.", {"model": "test", "latency_ms": 5}))
+    monkeypatch.setattr(loop, "spoken_answer", helper)
+    state = done(runner)
+    assert state["status"] == "done" and state["answer"] == "14 degrees and cloudy."
+    context = helper.call_args.args[0]
+    assert context["request"] == "weather in Utrecht"
+    assert context["page"]["document_start"] == "Utrecht weather: 14 °C, cloudy"
+    assert state["text_calls"][-1]["value"] == "14 degrees and cloudy."
+    runner.state["browser"].act.assert_not_called()
+
+
+def test_done_without_a_text_key_skips_the_answer(runner, monkeypatch):
+    monkeypatch.delenv("TEXT_MODEL_API_KEY", raising=False)
+    helper = Mock()
+    monkeypatch.setattr(loop, "spoken_answer", helper)
+    assert done(runner)["status"] == "done"
+    helper.assert_not_called()
+
+
+def test_a_failed_answer_keeps_the_task_done_and_reports_the_failure(runner, monkeypatch):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    monkeypatch.setattr(loop, "spoken_answer", Mock(side_effect=RuntimeError("Model provider returned HTTP 402")))
+    state = done(runner)
+    assert state["status"] == "done" and not state.get("answer")
+    assert "402" in state["answer_error"]
+
+
+def test_a_follow_up_sees_the_earlier_answer(runner):
+    runner.state.update(plan=["weather in Utrecht"], status="done", answer="14 degrees and cloudy.")
+    runner.new_task("and tomorrow?")
+    assert "weather in Utrecht (done; answered: 14 degrees and cloudy.)" in runner.state["goal"]
+    assert runner.state["answer"] is None
+
+
 def test_navigation_during_prediction_reobserves_without_action(runner):
     runner.state["browser"].fresh.side_effect = StalePage("Document navigating")
     runner.command("tick")

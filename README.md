@@ -39,7 +39,7 @@ cp .env.example .env
 uv run jev
 ```
 
-Open **http://127.0.0.1:8766** in Chrome, click **🎤 Speak**, and say what you want. Tick **Keep listening** to hold a conversation: the mic stays open, including while Jev works, until you say *"stop listening"* or click it off. Talking over a run pauses it after the current step: *"stop"* or *"wait"* ends that task, anything else ("no, the blue one") replaces it as a correction, and a cough lets it carry on. The mic is muted while Jev speaks its answer ("Done in 3 seconds.") so it doesn't hear itself. Typing a request works the same way.
+Open **http://127.0.0.1:8766** in Chrome, click **🎤 Speak**, and say what you want. Tick **Keep listening** to hold a conversation: the mic stays open, including while Jev works, until you say *"stop listening"* or click it off. Talking over a run pauses it after the current step: *"stop"* or *"wait"* ends that task, anything else ("no, the blue one") replaces it as a correction, and a cough lets it carry on. When a request asks something (*"what's the weather in Utrecht?"*, *"how tall is it?"*), Jev reads the answer off the page it finished on and says it; otherwise it says "Done in 3 seconds." The mic is muted while Jev speaks so it doesn't hear itself. Typing a request works the same way.
 
 - A request that names a site (*"open news.ycombinator.com"*) opens it. Otherwise Jev starts from a Google search; it cannot use the address bar.
 - Follow-ups (*"play the video"*, *"open its channel"*) continue in Jev's tab, with earlier requests as context.
@@ -47,7 +47,7 @@ Open **http://127.0.0.1:8766** in Chrome, click **🎤 Speak**, and say what you
 
 Chrome connects through [Browser Harness](https://github.com/browser-use/browser-harness), installed by `uv sync`. Run `uv run browser-harness --doctor` if it needs connecting, and allow remote debugging when Chrome asks. Jev works in its own background tab of your Chrome profile, so your logins and extensions apply (a site blocker will block Jev too).
 
-`TEXT_MODEL_API_KEY` is an OpenRouter key in the example configuration. Any OpenAI-compatible endpoint works; set the model, endpoint and reasoning setting in `.env`.
+`TEXT_MODEL_API_KEY` is an OpenRouter key in the example configuration. Any OpenAI-compatible endpoint works; set the model, endpoint and reasoning setting in `.env`. `ANSWER_MODEL` (default: `TEXT_MODEL`) writes spoken answers; picking the next train from a timetable with delays needed `google/gemini-3.8-flash` with low reasoning, about $0.0014 per answer.
 
 <img src="docs/inspector.png" alt="The inspector after a spoken conversation: request history, numbered elements, and operation probabilities" width="100%" />
 
@@ -62,7 +62,7 @@ Every observation of the page becomes a fresh, numbered element table:
 ...
 ```
 
-One TypeSafe request answers two questions at once: which **operation** (`CLICK`, `TYPE_TEXT`, `SELECT`, `PLACE_ON_MAP`, `SCROLL_UP`, `SCROLL_DOWN`, `WAIT`, `WEB_SEARCH`, `DONE`, `BLOCKED`) and which **element** for each operation that needs one. Only the head matching the chosen operation can execute. When the operation is `TYPE_TEXT`, a small LLM writes the value from the request. When it is `PLACE_ON_MAP` (a map built from `z/x/y` tiles, such as Leaflet), a vision model looks at a screenshot and names a place with its latitude and longitude.
+One TypeSafe request answers two questions at once: which **operation** (`CLICK`, `TYPE_TEXT`, `SELECT`, `PLACE_ON_MAP`, `SCROLL_UP`, `SCROLL_DOWN`, `WAIT`, `WEB_SEARCH`, `DONE`, `BLOCKED`) and which **element** for each operation that needs one. Only the head matching the chosen operation can execute. When the operation is `TYPE_TEXT`, a small LLM writes the value from the request. When it is `PLACE_ON_MAP` (a map built from `z/x/y` tiles, such as Leaflet), a vision model looks at a screenshot and names a place with its latitude and longitude. When it is `DONE`, the answer model decides whether the request asked a question and, if so, answers it from the finished page and the current time.
 
 ```text
 spoken request ─→ transcript ─→ goal (+ earlier requests as context)
@@ -72,6 +72,7 @@ page ─→ element table ─→ one TypeSafe request ─→ operation + element
                CLICK [3] ──────────┼──→ browser ─→ observe again
            TYPE_TEXT [2] ─→ small LLM ─→ text ─┤
         PLACE_ON_MAP [1] ─→ vision LLM ─→ lat/lng ─┘
+                    DONE ─→ answer LLM ─→ spoken answer (or "Done")
 ```
 
 Model output never becomes selectors, screen coordinates, URLs or code. A map place is a latitude and longitude; code projects it onto the observed map from its tiles, drags it out from under an overlay if needed, and hit-tests the pixel. Every target is an observed DOM node; the executor rechecks that the page has not changed and that nothing covers the element before input. `WEB_SEARCH` goes to a fixed Google address owned by code.
@@ -84,7 +85,8 @@ Model output never becomes selectors, screen coordinates, URLs or code. A map pl
 | **Any website** | Start on a site named in the request or on a Google search; `WEB_SEARCH` lets Jev leave a page that cannot help. |
 | **Modern pages** | Waits for single-page apps that change the URL without a new document (nos.nl, YouTube), follows links that open a new tab, names images, videos and embedded players so "play the video" has visible evidence. |
 | **No more loops** | Fixed a homepage ↔ article bounce and a Pause ↔ Play toggle; a request that repeats the same action from the same page three times now stops as blocked. |
-| **Honest evaluation** | [`scripts/conversations.py`](scripts/conversations.py) runs spoken-style conversations and checks every request independently. |
+| **Spoken answers** | A question gets an answer read from the page (the weather, the next train, a price), checked against Open-Meteo and the page itself; an action request gets none. |
+| **Honest evaluation** | [`scripts/conversations.py`](scripts/conversations.py) runs spoken-style conversations and checks every request independently; [`scripts/answers.py`](scripts/answers.py) checks what Jev says. |
 
 ## Use the library
 

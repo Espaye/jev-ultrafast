@@ -3,12 +3,22 @@
 import base64
 import hashlib
 import json
+import os
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from .browser import SEARCH_URL, Browser, StalePage
-from .model import action_space, choose, field_context, field_text, map_context, map_place
+from .model import (
+    action_space,
+    answer_context,
+    choose,
+    field_context,
+    field_text,
+    map_context,
+    map_place,
+    spoken_answer,
+)
 from .questions import MAX_STEPS
 
 WEB_SEARCH = {
@@ -64,6 +74,8 @@ class Agent:
             decision=None,
             history=[],
             status="ready",
+            answer=None,
+            answer_error=None,
             plan=plan,
             plan_index=0,
             decisions=[],
@@ -95,6 +107,9 @@ class Agent:
         state = self.state
         # Only a request Jev reported done is described as done; a stopped one may be asked again.
         outcome = "done" if state["status"] == "done" else "not finished"
+        if state["status"] == "done" and state.get("answer"):
+            # "And tomorrow?" refers to what Jev said, not only to what it did.
+            outcome += f"; answered: {state['answer'][:300]}"
         earlier = [*state.get("earlier", []), f"{state['plan'][-1]} ({outcome})"]
         if url:
             state["browser"].navigate(url)
@@ -108,6 +123,8 @@ class Agent:
             decision=None,
             history=[],
             status="ready",
+            answer=None,
+            answer_error=None,
             decisions=[],
             text_calls=[],
             elapsed_ms=0,
@@ -238,6 +255,21 @@ class Agent:
                     raise StalePage("Page changed since the decision. Choose again.")
                 state["status"] = "done" if selected == "DONE" else "blocked"
                 state["plan_index"] = len(state["plan"]) - 1 + int(selected == "DONE")
+                if selected == "DONE" and os.environ.get("TEXT_MODEL_API_KEY"):
+                    # The task is done either way; a failed answer is reported as such, never replaced by a guess.
+                    try:
+                        document = state["browser"].document_text()
+                    except (StalePage, RuntimeError):
+                        document = ""  # The visible text still holds what DONE was chosen on.
+                    try:
+                        answer, helper = spoken_answer(
+                            answer_context(state["plan"][-1], page, state["history"], document)
+                        )
+                    except (ValueError, RuntimeError) as exc:
+                        state["answer_error"] = str(exc)
+                    else:
+                        state["answer"] = answer
+                        state["text_calls"].append({**helper, "field": "spoken answer", "value": answer})
                 state["elapsed_ms"] = round(
                     (time.perf_counter() - state["started_at"]) * 1000
                 )

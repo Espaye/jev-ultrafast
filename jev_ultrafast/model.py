@@ -1,5 +1,6 @@
 """TypeSafe makes choices; an optional small OpenAI-compatible model writes field values."""
 
+import datetime
 import json
 import math
 import os
@@ -7,7 +8,7 @@ import time
 
 import httpx
 
-from .questions import MAP_PLACE, NEXT_ACTION, TARGET, TEXT_VALUE
+from .questions import ANSWER, MAP_PLACE, NEXT_ACTION, TARGET, TEXT_VALUE
 
 CLIENT = httpx.Client(http2=True, timeout=25)
 
@@ -105,7 +106,7 @@ def choose(state, goal, history):
     operations = {key: labels[key] for key in targets}
     operations.update({key: value["label"] for key, value in controls.items()})
     operations.update(
-        DONE="Every requirement is visibly satisfied.",
+        DONE="Every requirement is visibly satisfied; for a question, the page shows its answer.",
         BLOCKED="No supported operation can progress.",
     )
     questions = {
@@ -272,36 +273,91 @@ def map_place(context, screenshot):
     return {"place": place.strip(), "lat": lat, "lng": lng}, helper
 
 
-def field_text(context):
-    base, key = helper_endpoint("TYPE_TEXT")
-    model = os.environ.get("TEXT_MODEL", "deepseek-chat")
+def text_json(operation, system, context, setting="TEXT_MODEL"):
+    """One JSON reply from the OpenAI-compatible helper. setting names the model's variable (TEXT_MODEL, or
+    ANSWER_MODEL for spoken answers, which falls back to the text model when unset)."""
+    base, key = helper_endpoint(operation)
+    if not os.environ.get(setting):
+        setting = "TEXT_MODEL"
+    model = os.environ.get(setting, "deepseek-chat")
     reasoning = (
         {"thinking": {"type": "disabled"}}
         if "api.deepseek.com/" in base
         else {"reasoning": {"effort": "low"}}
     )
-    if os.environ.get("TEXT_MODEL_REASONING") == "none":
+    if os.environ.get(setting + "_REASONING") == "none":
         reasoning = {"reasoning": {"enabled": False}}
     started = time.perf_counter()
-    result = post_json(
-        base + "/chat/completions",
-        key,
-        {
-            "model": model,
-            "max_tokens": 1024,
-            "response_format": {"type": "json_object"},
-            **reasoning,
-            "messages": [
-                {"role": "system", "content": TEXT_VALUE},
-                {
-                    "role": "user",
-                    "content": json.dumps(context),
-                },
-            ],
-        },
-    )
+    # A reply without content changes nothing in the browser, so asking once more is safe.
+    for _attempt in range(2):
+        result = post_json(
+            base + "/chat/completions",
+            key,
+            {
+                "model": model,
+                "max_tokens": 1024,
+                "response_format": {"type": "json_object"},
+                **reasoning,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {
+                        "role": "user",
+                        "content": json.dumps(context),
+                    },
+                ],
+            },
+        )
+        try:
+            content = result["choices"][0]["message"]["content"]
+        except (KeyError, TypeError, IndexError):
+            content = None
+        if content:
+            break
+    latency_ms = round((time.perf_counter() - started) * 1000)
+    helper = {"model": model, "latency_ms": latency_ms, "usage": result.get("usage", {})}
     try:
-        output = json.loads(result["choices"][0]["message"]["content"])
+        output = json.loads(content)
+    except (ValueError, TypeError):
+        output = None
+    if not isinstance(output, dict):
+        print(f"{operation} helper: unusable reply {str(result.get('choices'))[:300]!r}", flush=True)
+    return output, helper
+
+
+def answer_context(goal, page, history, document=""):
+    return {
+        "request": goal,
+        # "The next train" or "open now" depends on the time; timetables also list trips that already left.
+        "now": datetime.datetime.now().astimezone().strftime("%A %Y-%m-%d %H:%M %Z"),
+        "page": {"url": page["url"], "title": page["title"], "visible_text": page["text"][:6000],
+                 "document_start": document[:8000]},
+        "recent_actions": [
+            {k: h.get(k) for k in ("action", "text")} for h in history[-6:]
+        ],
+    }
+
+
+def spoken_answer(context):
+    """The text helper answers a question from the finished page; None when the request only asked for an action."""
+    output, helper = text_json("A spoken answer", ANSWER, context, "ANSWER_MODEL")
+    value = output.get("answer") if isinstance(output, dict) else ""
+    question = output.get("question") if isinstance(output, dict) else None
+    if (
+        set(output or {}) != {"question", "answer"}
+        or not isinstance(question, bool)
+        or question and (not isinstance(value, str) or not value.strip() or len(value) > 600)
+    ):
+        raise ValueError("Text helper returned no valid answer; the task is done but nothing was said.")
+    if not question:
+        value = None  # An action request gets no answer, even if the helper wrote one anyway.
+    value = value.strip() if value else None
+    print(f"ANSWER helper: {value!r} — {helper['latency_ms']} ms — {helper['model']}", flush=True)
+    return value, helper
+
+
+def field_text(context):
+    output, helper = text_json("TYPE_TEXT", TEXT_VALUE, context)
+    try:
         value = output["text"]
         if (
             set(output) != {"text"}
@@ -314,11 +370,5 @@ def field_text(context):
         raise ValueError(
             "Text helper returned no valid field value; nothing typed."
         ) from None
-    latency_ms = round((time.perf_counter() - started) * 1000)
-    print(f"TEXT helper: {value!r} — {latency_ms} ms — {model}", flush=True)
-
-    return value, {
-        "model": model,
-        "latency_ms": latency_ms,
-        "usage": result.get("usage", {}),
-    }
+    print(f"TEXT helper: {value!r} — {helper['latency_ms']} ms — {helper['model']}", flush=True)
+    return value, helper

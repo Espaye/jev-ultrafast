@@ -138,14 +138,20 @@ function render() {
     done: "Jev reports complete · inspect the page",
     blocked: "Stopped · no supported next action",
   };
-  $("status").textContent = labels[state.status] || state.status;
+  $("status").textContent =
+    state.status === "done" && state.answer ? `Jev answers: ${state.answer}` : labels[state.status] || state.status;
   if (clock !== null && ["done", "blocked"].includes(state.status)) {
     stopClock(true);
     recordSteering();
     if (voiceRun) {
       const n = Math.round((endedAt - startedAt) / 1000),
         seconds = `${n} second${n === 1 ? "" : "s"}`;
-      answer(state.status === "done" ? `Done in ${seconds}.` : `I got stuck after ${seconds}.`);
+      answer(
+        state.status !== "done"
+          ? `I got stuck after ${seconds}.`
+          : state.answer ||
+              (state.answer_error ? `Done, but I could not read out the answer. ${state.answer_error}` : `Done in ${seconds}.`),
+      );
     }
   }
   if (!page) {

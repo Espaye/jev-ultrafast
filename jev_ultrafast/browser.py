@@ -126,6 +126,10 @@ class Browser:
             raise StalePage("Document changed during evaluation")
         return response.get("result", {}).get("value")
 
+    def document_text(self, limit=8000):
+        """The start of the whole document's text: a page's lead and summary, which may be scrolled out of view."""
+        return self.evaluate(f"(document.body?.innerText || '').slice(0, {int(limit)})") or ""
+
     def observe(self, screenshot=True):
         if getattr(self, "after_input", None):
             action, self.after_input = self.after_input, None

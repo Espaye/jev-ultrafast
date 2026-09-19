@@ -40,3 +40,39 @@ Five development runs (not counted above) came first. They led to three changes 
 - The Yemen news check required a Google results page. Jev sometimes opened a news article instead, which answers the request, so the check now accepts any page about Yemen news. “Play the video” now requires a playing video on whatever page Jev is on.
 
 In the development runs the same code also produced one real failure that did not recur in the final runs: twice, Jev typed “cow” on Google, clicked the Images link instead of searching, and reported done on an empty Google Images page.
+
+# Evaluation: spoken answers to questions
+
+**18/18 requests passed** across 3 runs of 4 conversations (2026-09-19, 17:04–17:07). Median time per request **5.9 s**, median **3** Jev decisions per request.
+
+Before this round, Jev answered every question with "Done". Now, when Jev chooses `DONE`, the answer model decides whether the request asked something and, if so, answers from the finished page: the text on screen, the top of the whole page, and the current local time. [`scripts/answers.py`](../scripts/answers.py) checks **what Jev says**, not only where it ends up. A number in the answer must appear on the final page, and it must also agree with a reference Jev never sees where one exists (Open-Meteo for the weather, fixed facts for the Eiffel Tower). A request that only asks for an action must get no answer.
+
+Operation and element: TypeSafe `jev-latest`. Field text: `inception/mercury-2.5`. Spoken answers: `google/gemini-3.8-flash`, low reasoning. Source identical in every run. OpenRouter cost of the whole round, development included: $0.16.
+
+| Conversation | Request | Passed | Median time | Median decisions | What the check requires |
+| --- | --- | --- | --- | --- | --- |
+| weather | “what's the weather in Utrecht right now” | 3/3 | 5.9 s | 3 | a current temperature within 3 °C of Open-Meteo, shown on the page |
+|  | “and tomorrow?” | 3/3 | 2.0 s | 1 | a temperature within tomorrow's Open-Meteo range ± 3 °C |
+| ns | “go to ns.nl and tell me when the next train from Utrecht Centraal to Amsterdam Centraal leaves” | 3/3 | 5.8 s | 4 | Utrecht → Amsterdam planned on ns.nl; the train that really leaves next, delays included |
+| coolblue | “go to coolblue.nl and search for the Nintendo Switch 2, how much does it cost?” | 3/3 | 6.7 s | 4 | a euro price shown on coolblue.nl |
+| eiffel | “find the Wikipedia article about the Eiffel Tower” | 3/3 | 7.7 s | 4 | no spoken answer: the request is an action |
+|  | “how tall is it?” | 3/3 | 3.0 s | 2 | its height: 330 m (or 300/312/324 m, 1,083 ft) |
+
+Typical answers: *"It is currently 21°C and cloudy in Utrecht, with a wind speed of 26 km/h."* · *"The next train to Amsterdam Centraal leaves at 17:09 from platform 5."* · *"The standalone Nintendo Switch 2 costs 499 euros on Coolblue, while bundles start at 524 euros."*
+
+One flaw the checks let through: in run 3 the NS answer named the right train (17:09) but added that the delayed 16:54 train "is also leaving at 17:01". At 17:06 that train had already left.
+
+Reproduce with `uv run --env-file .env python scripts/answers.py <new-folder>` (paid model calls).
+
+## What development turned up
+
+Nine development runs (not counted above) found these problems, each fixed before the final runs:
+
+- **bol.com blocks this IP address** as suspected automated traffic. Jev correctly reported `blocked`; the conversation moved to coolblue.nl.
+- **ns.nl's "Plannen" looked like any other button.** When the planner already held the stations (ns.nl remembers the last trip searched in the browser profile), Jev chose "Toon Reisopties" (a toggle) 93% of the time, then wandered into the site search. The page snapshot now names a form's submit button `submit button`, and Jev's rules say to read controls by meaning in the site's language. Jev then pressed Plannen first in every run.
+- **The answer model did not know the time.** NS lists trips from just before the requested time, so "the next train" came back as one that had already left. Answers now get the local time, and the rules explain that a delayed train leaves at its planned time plus the delay.
+- **Mercury was not reliable enough for answers.** Replaying the same saved NS page 5 times: Mercury named the right train 2–3 times; with a train running 7 minutes late, no model with reasoning off got it right. `gemini-3.8-flash` with low reasoning got 15/15 on the replays (≈1.5 s, ≈$0.0014 per answer). Field text stays on Mercury.
+- **"Find the Wikipedia article" was answered with a summary.** The answer model now returns an explicit `question: true/false` before any answer, and code drops the answer for `false`.
+- **"How tall is it?" said 320.75 m** from a table of historical heights in the section Jev had scrolled to. The answer model now also gets the top of the whole page, and the rules prefer the headline figure: 330 m in every final run.
+- **An English question about a Dutch site was answered in Dutch**, which the English voice would mispronounce. The rules now name the request's language, not the page's.
+- **An empty reply from the text model** (no content) once failed a field. Since nothing has touched the browser at that point, the helper now asks once more.
