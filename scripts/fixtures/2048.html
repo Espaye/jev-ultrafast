@@ -1,0 +1,61 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>2048</title>
+<!-- A local 2048 whose board is text, for keyboard checks: public 2048 sites now draw on a canvas. The tile
+     sequence is seeded, so every run starts from the same board and gets the same new tiles for the same moves. -->
+<style>
+  body { font-family: system-ui, sans-serif; margin: 40px; }
+  #board { display: grid; grid-template-columns: repeat(4, 64px); gap: 6px; margin: 16px 0; }
+  #board div { height: 64px; display: grid; place-items: center; background: #eee; font-size: 22px; font-weight: 600; }
+  #board div.empty { color: #bbb; }
+</style>
+<h1>2048</h1>
+<p>Join the tiles with the arrow keys to get to 2048.</p>
+<p id="score">Score: 0</p>
+<div id="board" aria-label="Board"></div>
+<p id="status"></p>
+<script>
+  let seed = 2048;
+  const random = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+  const game = (window.game = { cells: Array(16).fill(0), score: 0, moves: 0, over: false });
+
+  function spawn() {
+    const empty = game.cells.flatMap((v, i) => (v ? [] : [i]));
+    if (empty.length) game.cells[empty[Math.floor(random() * empty.length)]] = random() < 0.9 ? 2 : 4;
+  }
+  function render() {
+    document.querySelector("#board").innerHTML = game.cells
+      .map((v, i) => `<div class="${v ? "" : "empty"}" aria-label="Row ${Math.floor(i / 4) + 1}, column ${(i % 4) + 1}: ${v || "empty"}">${v || "·"}</div>`)
+      .join("");
+    document.querySelector("#score").textContent = `Score: ${game.score}`;
+    document.querySelector("#status").textContent = game.over ? "Game over. No moves left." : "";
+  }
+  function slide(line) {
+    const tiles = line.filter(Boolean), out = [];
+    for (let i = 0; i < tiles.length; i++) {
+      if (tiles[i] === tiles[i + 1]) { out.push(tiles[i] * 2); game.score += tiles[i] * 2; i++; }
+      else out.push(tiles[i]);
+    }
+    return [...out, ...Array(4 - out.length).fill(0)];
+  }
+  function move(direction) {
+    const before = game.cells.join();
+    for (let k = 0; k < 4; k++) {
+      const index = [0, 1, 2, 3].map((j) =>
+        direction === "left" ? k * 4 + j : direction === "right" ? k * 4 + 3 - j :
+        direction === "up" ? j * 4 + k : (3 - j) * 4 + k);
+      slide(index.map((i) => game.cells[i])).forEach((v, j) => (game.cells[index[j]] = v));
+    }
+    if (game.cells.join() === before) return;
+    game.moves++;
+    spawn();
+    game.over = !game.cells.includes(0) && game.cells.every((v, i) =>
+      (i % 4 === 3 || v !== game.cells[i + 1]) && (i > 11 || v !== game.cells[i + 4]));
+    render();
+  }
+  document.addEventListener("keydown", (event) => {
+    const direction = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down" }[event.key];
+    if (direction && !game.over) { event.preventDefault(); move(direction); }
+  });
+  spawn(); spawn(); render();
+</script>

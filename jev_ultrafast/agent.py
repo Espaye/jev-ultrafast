@@ -29,6 +29,28 @@ WEB_SEARCH = {
     "label": "Open an empty Google search to search the whole web instead of {site}. Choose it when the "
     "request is about something {site} does not cover; {site}'s own search box only finds {site} content.",
 }
+# Every page takes key presses; the key itself is a choice among these, never model text.
+KEY_ACTIONS = [
+    {"id": "key_" + key.lower(), "kind": "key", "key": key, "label": label}
+    for key, label in [
+        ("Enter", "Enter: submit or confirm"), ("Escape", "Escape: close a dialog or menu"),
+        ("ArrowUp", "Arrow up"), ("ArrowDown", "Arrow down"), ("ArrowLeft", "Arrow left"),
+        ("ArrowRight", "Arrow right"), ("Backspace", "Backspace: delete the last typed character"),
+        ("Tab", "Tab: move focus to the next control"),
+    ]
+]
+TYPE_KEYS = {
+    "id": "type_keys",
+    "kind": "keys",
+    "label": "Type letters on the keyboard into the page itself, for a page that takes key presses but has no "
+    "text field to fill (such as a word game). A small LLM supplies the letters from the goal.",
+}
+GO_BACK = {
+    "id": "go_back",
+    "kind": "back",
+    "label": "Go back to the previous page, like the browser's Back button. Only when the current request asks to "
+    "go back, return or close something opened; never to finish or re-check another request.",
+}
 EARLIER_REQUESTS = 5
 CYCLE_REPEATS = 3
 STALE_REPEATS = 2
@@ -97,6 +119,9 @@ class Agent:
             site = urlsplit(page["url"]).hostname or "this site"
             site = site.removeprefix("www.")
             page["actions"].append({**WEB_SEARCH, "label": WEB_SEARCH["label"].format(site=site)})
+        page["actions"].extend([*KEY_ACTIONS, TYPE_KEYS])
+        if self.state["browser"].can_go_back():
+            page["actions"].append(GO_BACK)
         return page
 
     def new_task(self, goal, url=None):
@@ -125,6 +150,7 @@ class Agent:
             status="ready",
             answer=None,
             answer_error=None,
+            inert_keys=None,
             decisions=[],
             text_calls=[],
             elapsed_ms=0,
@@ -222,6 +248,12 @@ class Agent:
             if state.get("map_declined") == page["fingerprint"]:
                 # The helper that sees this exact page found nothing to place; offering the map again repeats it.
                 page = {**page, "actions": [a for a in page["actions"] if a["kind"] != "place"]}
+            inert = state.get("inert_keys") or {}
+            if inert.get("fingerprint") == page["fingerprint"]:
+                # A key that changed nothing on this exact page (2048 against a wall) would change nothing again.
+                page = {**page, "actions": [
+                    a for a in page["actions"] if not (a["kind"] == "key" and a["key"] in inert["keys"])
+                ]}
             last = state["history"][-1] if state["history"] else None
             if last and last["kind"] == "place" and last["page_changed"] is not False:
                 # Like a filled field's value: the map holds the point placed by the last action, until another
@@ -315,7 +347,7 @@ class Agent:
                     state["status"] = "blocked" if stuck else "ready"
                     return self.snapshot()
                 text = f"{place['place']} ({place['lat']:.2f}, {place['lng']:.2f})"
-            elif action["kind"] == "fill":
+            elif action["kind"] in {"fill", "keys"}:
                 if not state["browser"].fresh(page):
                     raise StalePage(
                         "Page changed before text generation. Choose again."
@@ -373,6 +405,10 @@ class Agent:
                 url=state["page"]["url"],
                 elapsed_ms=state["elapsed_ms"],
             )
+            if action["kind"] == "key" and not state["history"][-1]["page_changed"]:
+                inert = state.get("inert_keys") or {}
+                keys = inert.get("keys", []) if inert.get("fingerprint") == page["fingerprint"] else []
+                state["inert_keys"] = {"fingerprint": page["fingerprint"], "keys": [*keys, action["key"]]}
             if state["record"] and state["page"]["screenshot"]:
                 (self.record_dir / f"{state['elapsed_ms']:06d}.jpg").write_bytes(
                     base64.b64decode(state["page"]["screenshot"])

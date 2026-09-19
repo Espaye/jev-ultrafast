@@ -126,6 +126,12 @@ class Browser:
             raise StalePage("Document changed during evaluation")
         return response.get("result", {}).get("value")
 
+    def can_go_back(self):
+        try:
+            return self.call("Page.getNavigationHistory")["currentIndex"] > 0
+        except (RuntimeError, KeyError):
+            return False
+
     def document_text(self, limit=8000):
         """The start of the whole document's text: a page's lead and summary, which may be scrolled out of view."""
         return self.evaluate(f"(document.body?.innerText || '').slice(0, {int(limit)})") or ""
@@ -163,6 +169,22 @@ class Browser:
                 )
             except RuntimeError:
                 pass
+            if action["kind"] in {"key", "keys"}:
+                # Keyboard-driven pages animate their answer (wordly.org pops each letter in from opacity 0);
+                # read the page once finite animations end, or the typed word looks like it never arrived.
+                try:
+                    self.call("Runtime.evaluate", awaitPromise=True, returnByValue=True, expression="""
+                      new Promise(resolve => {
+                        const end=performance.now()+1500;
+                        const check=()=>{
+                          const busy=document.getAnimations().some(a=>a.playState==='running' &&
+                            a.effect?.getTiming().iterations!==Infinity);
+                          if (!busy || performance.now()>end) resolve(); else setTimeout(check,50);
+                        };
+                        setTimeout(check,50);
+                      })""")
+                except RuntimeError:
+                    pass
             if action["kind"] == "click" and not self.follow_new_tab() and self.left_page():
                 self.wait_for_load()
         # A cross-site navigation (Google → YouTube) can take seconds to commit.
@@ -210,6 +232,14 @@ class Browser:
         if action["kind"] == "search":
             # A fixed address owned by code; the model never supplies a URL.
             self.navigate(SEARCH_URL)
+            return {"executed": action["id"]}
+        if action["kind"] == "back":
+            history = self.call("Page.getNavigationHistory")
+            if history["currentIndex"] < 1:
+                raise StalePage("There is no earlier page to go back to. Observe again.")
+            self.after_input = None
+            self.call("Page.navigateToHistoryEntry", entryId=history["entries"][history["currentIndex"] - 1]["id"])
+            self.wait_for_load()
             return {"executed": action["id"]}
         # The document and address the click started on; marker = [performance.timeOrigin, location.href, ...].
         self.clicked_page = page.get("marker", [None, None])[:2]
@@ -280,6 +310,28 @@ def place_on_map(call, evaluate, action, place):
         call("Input.dispatchMouseEvent", type=event, x=point["x"], y=point["y"], button="left", clickCount=1)
 
 
+# The only keys PRESS_KEY can send: key name -> Windows virtual key code. Owned by code, like SEARCH_URL.
+KEYS = {"Enter": 13, "Escape": 27, "ArrowUp": 38, "ArrowDown": 40, "ArrowLeft": 37, "ArrowRight": 39,
+        "Backspace": 8, "Tab": 9}
+
+
+def press_key(call, key, text=None):
+    """A real key press, keydown to keyup, so pages that listen for keys (games, dialogs) see it."""
+    if key in KEYS:
+        code, vk = key, KEYS[key]
+    elif len(key) == 1 and key.isascii() and key.isalnum():
+        code, vk = ("Key" if key.isalpha() else "Digit") + key.upper(), ord(key.upper())
+    elif key == " ":
+        code, vk = "Space", 32
+    else:
+        raise ValueError(f"Unsupported key {key!r}")
+    if key == "Enter":
+        text = "\r"
+    down = {"type": "keyDown" if text else "rawKeyDown", "key": key, "code": code, "windowsVirtualKeyCode": vk}
+    call("Input.dispatchKeyEvent", **down, **({"text": text} if text else {}))
+    call("Input.dispatchKeyEvent", type="keyUp", key=key, code=code, windowsVirtualKeyCode=vk)
+
+
 def browser_operation(request):
     operation = request["operation"]
     session = request["session"]
@@ -302,6 +354,17 @@ def browser_operation(request):
             call("Input.dispatchMouseEvent", type="mouseWheel", x=550, y=650, deltaX=0, deltaY=action["delta"])
         elif kind == "place":
             place_on_map(call, evaluate, action, request["place"])
+        elif kind == "key":
+            if action["key"] not in KEYS:
+                raise ValueError("Invalid key")
+            press_key(call, action["key"])
+        elif kind == "keys":
+            # Letters typed into the page itself (a word game), one key press each; no field to click first.
+            text = request["text"]
+            if not 0 < len(text) <= 100 or not all(c == " " or c.isascii() and c.isalnum() for c in text):
+                raise ValueError("Typed keys must be 1-100 letters, digits or spaces")
+            for character in text:
+                press_key(call, character, text=character)
         elif kind != "wait":
             if type(action["node"]) is not int:
                 raise ValueError("Invalid observed node")

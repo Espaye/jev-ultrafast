@@ -24,7 +24,7 @@ Say *"go to youtube.com and search for the moon landing"*, then *"play the first
 | *“find the Wikipedia article about the Eiffel Tower”* → *“now open the article about the man who designed it”* | 3/3 → 3/3 | 6.5 s → 1.6 s |
 | *“look up a picture of a cow”* → *“show me sheep instead”* | 3/3 → 3/3 | 5.4 s → 4.0 s |
 
-The two misses: Al Jazeera's live player never rendered a video in Jev's tab, and once Jev kept clicking a YouTube recommendation filter instead of the channel link. Both ended as `blocked`, not as a false success. Three runs of ten requests is a sanity check, not a benchmark, and live sites change daily.
+The two misses: Al Jazeera's live player never rendered a video in Jev's tab, and once Jev kept clicking a YouTube recommendation filter instead of the channel link. Both ended as `blocked`, not as a false success. Three runs of ten requests is a sanity check, not a benchmark, and live sites change daily: rerun on 2026-09-19, the cow → sheep pair failed 0/6 with both the code measured here and the current code, because Google's ordinary results now show a picture strip and Jev stops there instead of opening Images.
 
 Every request is checked on the final page by code that knows nothing about Jev's choices (a URL, a playing `<video>`, the story that was first on the front page). A `DONE` from Jev is never counted as a pass. Details, every run, and every failure: [docs/evaluation.md](docs/evaluation.md).
 
@@ -62,7 +62,7 @@ Every observation of the page becomes a fresh, numbered element table:
 ...
 ```
 
-One TypeSafe request answers two questions at once: which **operation** (`CLICK`, `TYPE_TEXT`, `SELECT`, `PLACE_ON_MAP`, `SCROLL_UP`, `SCROLL_DOWN`, `WAIT`, `WEB_SEARCH`, `DONE`, `BLOCKED`) and which **element** for each operation that needs one. Only the head matching the chosen operation can execute. When the operation is `TYPE_TEXT`, a small LLM writes the value from the request. When it is `PLACE_ON_MAP` (a map built from `z/x/y` tiles, such as Leaflet), a vision model looks at a screenshot and names a place with its latitude and longitude. When it is `DONE`, the answer model decides whether the request asked a question and, if so, answers it from the finished page and the current time.
+One TypeSafe request answers two questions at once: which **operation** (`CLICK`, `TYPE_TEXT`, `SELECT`, `PLACE_ON_MAP`, `PRESS_KEY`, `TYPE_KEYS`, `SCROLL_UP`, `SCROLL_DOWN`, `WAIT`, `WEB_SEARCH`, `GO_BACK`, `DONE`, `BLOCKED`) and which **element** for each operation that needs one. Only the head matching the chosen operation can execute. When the operation is `TYPE_TEXT`, a small LLM writes the value from the request. When it is `PLACE_ON_MAP` (a map built from `z/x/y` tiles, such as Leaflet), a vision model looks at a screenshot and names a place with its latitude and longitude. `PRESS_KEY` picks a key from a fixed list (Enter, Escape, arrows, Backspace, Tab); `TYPE_KEYS` types a word into a page that has no text field, such as a word game. When it is `DONE`, the answer model decides whether the request asked a question and, if so, answers it from the finished page and the current time.
 
 ```text
 spoken request ─→ transcript ─→ goal (+ earlier requests as context)
@@ -75,7 +75,7 @@ page ─→ element table ─→ one TypeSafe request ─→ operation + element
                     DONE ─→ answer LLM ─→ spoken answer (or "Done")
 ```
 
-Model output never becomes selectors, screen coordinates, URLs or code. A map place is a latitude and longitude; code projects it onto the observed map from its tiles, drags it out from under an overlay if needed, and hit-tests the pixel. Every target is an observed DOM node; the executor rechecks that the page has not changed and that nothing covers the element before input. `WEB_SEARCH` goes to a fixed Google address owned by code.
+Model output never becomes selectors, screen coordinates, URLs, key codes or code. A map place is a latitude and longitude; code projects it onto the observed map from its tiles, drags it out from under an overlay if needed, and hit-tests the pixel. Every target is an observed DOM node; the executor rechecks that the page has not changed and that nothing covers the element before input. `WEB_SEARCH` goes to a fixed Google address owned by code.
 
 ## What this fork changes
 
@@ -86,7 +86,8 @@ Model output never becomes selectors, screen coordinates, URLs or code. A map pl
 | **Modern pages** | Waits for single-page apps that change the URL without a new document (nos.nl, YouTube), follows links that open a new tab, names images, videos and embedded players so "play the video" has visible evidence. |
 | **No more loops** | Fixed a homepage ↔ article bounce and a Pause ↔ Play toggle; a request that repeats the same action from the same page three times now stops as blocked. |
 | **Spoken answers** | A question gets an answer read from the page (the weather, the next train, a price), checked against Open-Meteo and the page itself; an action request gets none. |
-| **Honest evaluation** | [`scripts/conversations.py`](scripts/conversations.py) runs spoken-style conversations and checks every request independently; [`scripts/answers.py`](scripts/answers.py) checks what Jev says. |
+| **Keyboard + Back** | Arrow keys, Enter and typed letters for games and word puzzles; the browser's Back button. A key that changed nothing is not offered again on that page. |
+| **Honest evaluation** | [`scripts/conversations.py`](scripts/conversations.py) runs spoken-style conversations and checks every request independently; [`scripts/answers.py`](scripts/answers.py) checks what Jev says; [`scripts/keys.py`](scripts/keys.py) checks keyboard tasks. |
 
 ## Use the library
 

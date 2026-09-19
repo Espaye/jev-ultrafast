@@ -21,6 +21,14 @@
         n.nodeType===1 && n.getAttribute('aria-hidden')!=='true' ? name(n,seen) : '').join(' ').trim()) ||
       e.getAttribute('title') || e.getAttribute('placeholder') || '';
   };
+  // A control whose only content is a picture without alt text (Wikipedia's lead photo) is named by the file shown.
+  const pictured = e => {
+    const img=e.querySelector('img');
+    let file=(img?.currentSrc||img?.src||'').split(/[?#]/)[0].split('/').pop()||'';
+    try { file=decodeURIComponent(file); } catch {}
+    file=file.replace(/^\d+px-/,'').replace(/\.\w{2,5}$/,'').replace(/_/g,' ').trim().slice(0,80);
+    return file ? 'image: '+file : '';
+  };
   const roles=['button','link','checkbox','radio','switch','tab','menuitem','menuitemradio',
     'option','gridcell','combobox','textbox','searchbox','spinbutton'];
   const selector='a[href],button,input,textarea,select,summary,[contenteditable="true"],'+
@@ -151,7 +159,7 @@
     // (NS: "Plannen" next to a "Toon Reisopties" toggle) does not say which one sends the form.
     const submits=rname==='button' && e.form && ['BUTTON','INPUT'].includes(e.tagName) &&
       ['submit','image'].includes(e.type);
-    const base={node:identity(e),role:submits?'submit button':rname,label:name(e)||rname,
+    const base={node:identity(e),role:submits?'submit button':rname,label:name(e)||pictured(e)||rname,
       rect:{x:r.x,y:r.y,w:r.width,h:r.height}};
     for (const key of ['checked','selected','expanded']) {
       const value=e.getAttribute('aria-'+key);

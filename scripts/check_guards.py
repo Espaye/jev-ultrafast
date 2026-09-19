@@ -1,8 +1,12 @@
 """Local-browser freshness/execution regressions. No model calls or external websites."""
 
+from pathlib import Path
 from urllib.parse import quote
 
+from jev_ultrafast.agent import GO_BACK, KEY_ACTIONS, TYPE_KEYS
 from jev_ultrafast.browser import Browser, StalePage
+
+ROOT = Path(__file__).resolve().parents[1]
 
 HTML = """<!doctype html><title>Guard checks</title>
 <style>body{margin:30px}button{width:180px;height:50px}label{display:block}#outside{position:absolute;top:3000px}</style>
@@ -130,6 +134,37 @@ def main():
         browser.call("Page.navigate", url="about:blank")
         assert not browser.fresh(page, field)
         passed.append("navigation invalidates the old document")
+
+        browser.navigate("data:text/html," + quote(
+            "<title>Keys</title><p>Type here</p><script>window.keys=[];"
+            "addEventListener('keydown',e=>keys.push(e.key));</script>"))
+        page = browser.observe(screenshot=False)
+        for key in ("ArrowLeft", "Enter"):
+            browser.act(next(a for a in KEY_ACTIONS if a["key"] == key), page)
+            page = browser.observe(screenshot=False)
+        browser.act(TYPE_KEYS, page, text="crane")
+        assert browser.evaluate("window.keys.join()") == "ArrowLeft,Enter,c,r,a,n,e"
+        for invalid in ({**KEY_ACTIONS[0], "key": "F5"}, ):
+            try:
+                browser.act(invalid, browser.observe(screenshot=False))
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("A key outside the fixed set was sent")
+        passed.append("key presses and typed letters reach a page that listens for keys; other keys are refused")
+
+        browser.navigate((ROOT / "scripts" / "fixtures" / "2048.html").as_uri())
+        page = browser.observe(screenshot=False)
+        before = page["text"]
+        browser.act(next(a for a in KEY_ACTIONS if a["key"] == "ArrowUp"), page)
+        page = browser.observe(screenshot=False)
+        assert browser.evaluate("window.game.moves") == 1 and page["text"] != before
+        passed.append("an arrow key moves the 2048 fixture and the new board is observed")
+
+        assert browser.can_go_back()
+        browser.act(GO_BACK, browser.observe(screenshot=False))
+        assert browser.observe(screenshot=False)["url"].startswith("data:text/html")
+        passed.append("Back returns to the previous page")
     finally:
         browser.close()
     print("\n".join(passed))

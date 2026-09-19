@@ -483,6 +483,86 @@ def test_web_search_navigates_to_a_fixed_address(monkeypatch):
     operation.assert_not_called()
 
 
+@pytest.mark.parametrize("earlier_page", [True, False])
+def test_back_is_offered_only_when_there_is_an_earlier_page(runner, earlier_page):
+    runner.state["browser"].can_go_back.return_value = earlier_page
+    runner.state["browser"].observe.return_value = page()
+    ids = [a["id"] for a in runner.observe()["actions"]]
+    assert ("go_back" in ids) == earlier_page
+    assert "key_enter" in ids and "type_keys" in ids
+
+
+def test_a_near_tie_from_rounded_probabilities_is_accepted():
+    answer = {"choice": "down", "confidence": 0.23, "probabilities": {"left": 0.34, "down": 0.33, "up": 0.33}}
+    assert model.validate_choice(answer, {"left", "down", "up"}) == answer
+
+
+def test_a_key_that_changed_nothing_is_not_offered_again_on_that_page(runner, monkeypatch):
+    up = next(a for a in loop.KEY_ACTIONS if a["key"] == "ArrowUp")
+    runner.state["page"]["actions"] += loop.KEY_ACTIONS
+    runner.state["page"]["fingerprint"] = fingerprint(runner.state["page"])
+    runner.state["browser"].observe.return_value = runner.state["page"]  # The board did not move.
+    runner.state["decision"] = {**decision(up["id"]), "operation": "PRESS_KEY", "target": "ArrowUp"}
+    runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+    assert runner.state["history"][-1]["page_changed"] is False
+    choose = Mock(return_value=decision("e3"))
+    monkeypatch.setattr(loop, "choose", choose)
+    runner.command("predict")
+    offered = {a.get("key") for a in choose.call_args.args[0]["actions"]}
+    assert "ArrowUp" not in offered and "ArrowDown" in offered
+
+
+def test_keys_are_targets_of_one_operation_not_page_elements():
+    elements, targets, controls = model.action_space([*page()["actions"], *loop.KEY_ACTIONS, loop.TYPE_KEYS])
+    assert len(elements) == 2
+    assert set(targets["PRESS_KEY"]) == {"Enter", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+                                         "Backspace", "Tab"}
+    assert "TYPE_KEYS" in controls
+
+
+def key_events(monkeypatch, action, text=None):
+    import jev_ultrafast.browser as browser
+
+    sent = []
+    monkeypatch.setattr(browser, "session_cdp", lambda method, _session, **params: sent.append((method, params)))
+    browser.browser_operation({"operation": "act", "session": "s", "action": action, "text": text, "place": None})
+    return [(p["type"], p["key"], p.get("text")) for m, p in sent if m == "Input.dispatchKeyEvent"]
+
+
+def test_press_key_sends_a_real_key_press(monkeypatch):
+    arrow = next(a for a in loop.KEY_ACTIONS if a["key"] == "ArrowUp")
+    assert key_events(monkeypatch, arrow) == [("rawKeyDown", "ArrowUp", None), ("keyUp", "ArrowUp", None)]
+    enter = next(a for a in loop.KEY_ACTIONS if a["key"] == "Enter")
+    assert key_events(monkeypatch, enter)[0] == ("keyDown", "Enter", "\r")
+
+
+@pytest.mark.parametrize(("action", "text"), [
+    ({**loop.KEY_ACTIONS[0], "key": "F5"}, None),
+    (loop.TYPE_KEYS, "rm -rf"),
+    (loop.TYPE_KEYS, ""),
+    (loop.TYPE_KEYS, "x" * 101),
+])
+def test_only_fixed_keys_and_plain_letters_are_sent(monkeypatch, action, text):
+    with pytest.raises(ValueError):
+        key_events(monkeypatch, action, text)
+
+
+def test_typed_keys_are_one_press_per_letter(monkeypatch):
+    events = key_events(monkeypatch, loop.TYPE_KEYS, "Crane")
+    assert [e for e in events if e[0] == "keyDown"] == [("keyDown", c, c) for c in "Crane"]
+
+
+def test_type_keys_gets_its_letters_from_the_text_helper(runner, monkeypatch):
+    helper = Mock(return_value=("crane", {"model": "test", "latency_ms": 5}))
+    monkeypatch.setattr(loop, "field_text", helper)
+    runner.state["page"]["actions"].append(loop.TYPE_KEYS)
+    runner.state["decision"] = {**decision("type_keys"), "operation": "TYPE_KEYS", "target": None}
+    runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+    runner.state["browser"].act.assert_called_once()
+    assert runner.state["browser"].act.call_args.kwargs["text"] == "crane"
+    assert runner.state["history"][-1]["text"] == "crane"
+
+
 def test_a_click_that_opens_a_new_tab_moves_the_run_there(monkeypatch):
     import jev_ultrafast.browser as browser
 

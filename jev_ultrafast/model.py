@@ -44,7 +44,8 @@ def validate_choice(answer, ids):
                 for n in numbers
             )
             and abs(sum(probabilities.values()) - 1) < 0.02
-            and probabilities[answer["choice"]] >= max(probabilities.values()) - 1e-6
+            # Probabilities arrive rounded to two decimals, so a near-tie (0.33 chosen beside 0.34) is still the top.
+            and probabilities[answer["choice"]] >= max(probabilities.values()) - 0.011
         )
     except (KeyError, TypeError, ValueError):
         valid = False
@@ -59,6 +60,10 @@ def action_space(actions):
     operations = {"click": "CLICK", "fill": "TYPE_TEXT", "select": "SELECT", "place": "PLACE_ON_MAP"}
     for action in actions:
         kind = action["kind"]
+        if kind == "key":
+            # Keys are targets of their own operation, not page elements.
+            targets.setdefault("PRESS_KEY", {})[action["key"]] = action
+            continue
         if kind not in operations:
             controls[action["id"].upper()] = action
             continue
@@ -102,6 +107,8 @@ def choose(state, goal, history):
         "SELECT": "Select an observed dropdown value.",
         "PLACE_ON_MAP": "Click a location on an observed map: a requested place, or a guess the page asks for. "
         "A helper that sees the page picks the location from the goal.",
+        "PRESS_KEY": "Press one keyboard key on the page: Enter to submit, Escape to close a dialog, an arrow to "
+        "move in a game or list, Backspace to delete the last typed letter.",
     }
     operations = {key: labels[key] for key in targets}
     operations.update({key: value["label"] for key, value in controls.items()})
@@ -153,9 +160,16 @@ def choose(state, goal, history):
     result = post_json(
         "https://api.typesafe.ai/v1/systemone", os.environ["TYPESAFE_API_KEY"], body
     )
-    operation_answer = validate_choice(
-        result["answers"].get("operation", {}), operations
-    )
+    try:
+        operation_answer = validate_choice(result["answers"].get("operation", {}), operations)
+        if operation_answer["choice"] in targets:
+            validate_choice(
+                result["answers"].get(operation_answer["choice"].lower() + "_target", {}),
+                targets[operation_answer["choice"]],
+            )
+    except ValueError:
+        print(f"JEV: invalid reply {json.dumps(result.get('answers'))[:600]}", flush=True)
+        raise
     operation = operation_answer["choice"]
     target = None
     target_answer = None
@@ -367,6 +381,7 @@ def field_text(context):
         ):
             raise ValueError()
     except (ValueError, KeyError, TypeError):
+        print(f"TYPE_TEXT helper: invalid value {json.dumps(output)[:300]}", flush=True)
         raise ValueError(
             "Text helper returned no valid field value; nothing typed."
         ) from None

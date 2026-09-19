@@ -76,3 +76,31 @@ Nine development runs (not counted above) found these problems, each fixed befor
 - **"How tall is it?" said 320.75 m** from a table of historical heights in the section Jev had scrolled to. The answer model now also gets the top of the whole page, and the rules prefer the headline figure: 330 m in every final run.
 - **An English question about a Dutch site was answered in Dutch**, which the English voice would mispronounce. The rules now name the request's language, not the page's.
 - **An empty reply from the text model** (no content) once failed a field. Since nothing has touched the browser at that point, the helper now asks once more.
+
+# Evaluation: keyboard and Back
+
+**13/15 requests passed** across 3 runs of 3 conversations (2026-09-19). Before this round Jev could not press a key: every input went to a clicked element.
+
+New operations: `PRESS_KEY` (Enter, Escape, the four arrows, Backspace, Tab: a fixed list owned by code, the key is a target like an element), `TYPE_KEYS` (letters typed into the page itself, for a page with no text field such as a word game; the text model supplies the word, code sends one key press per letter and accepts only letters, digits and spaces) and `GO_BACK` (the browser's Back, offered only when the tab has an earlier page). [`scripts/keys.py`](../scripts/keys.py) checks the page's own state: the game's score, the puzzle's locked-in rows, the address.
+
+| Conversation | Request | Passed | Median time | Median decisions | What the check requires |
+| --- | --- | --- | --- | --- | --- |
+| 2048 (local fixture) | “play 2048 with the arrow keys until the score is at least 100” | 3/3 | 21.6 s | 30 | the game's own score is at least 100 (112 in 29 moves each run) |
+| wordly.org | “guess the word crane” | 2/3 | 12.0 s | 5 | the first locked-in row is CRANE |
+|  | “now guess slate” | 2/3 | 7.8 s | 5 | the second locked-in row is SLATE |
+| Hacker News | “open the comments of the top story” | 3/3 | 3.7 s | 2 | a comment page |
+|  | “go back to the front page” | 3/3 | 3.0 s | 2 | the front page again, and Jev reports done |
+
+The 2048 board is a local, seeded page ([`scripts/fixtures/2048.html`](../scripts/fixtures/2048.html)): every public 2048 site now draws its board on a canvas, which Jev, reading text, cannot see. The miss on wordly.org: “crane” landed, but the page had not shown it when Jev looked, so the text model typed it again one letter at a time and the next guess went onto a spoiled row.
+
+## Regression on the earlier evaluations
+
+The same final code, rerun on the earlier suites: spoken answers **17/18** (the miss: the field-text model returned an empty reply twice before typing on coolblue.nl), conversations **23/30**. The conversation misses: “look up a picture of a cow” / “show me sheep instead” failed 0/6: Jev searched “cow images” and reported done on Google's ordinary results, which now show a strip of pictures, instead of opening Images. **The code from before this round (482407b) fails the same pair 0/6 on the same day**, so this is Google's results page changing since the first evaluation, not this round. The other miss: once “play the first video” opened a YouTube Short.
+
+## What development turned up
+
+- **Letters typed into wordly.org “never arrived”.** They did, but each letter pops in from opacity 0 and Jev read the page after 50 ms. After a key press Jev now waits until the page's finite animations end (at most 1.5 s).
+- **Jev pressed “Arrow up” until the no-progress guard stopped it.** A key that changed nothing on a page is now withheld on that exact page, the way a declined map is. Rules also say a key that did nothing will do nothing again.
+- **TypeSafe returned a near-tie (0.33 chosen beside 0.34)** and the validator rejected it as “not the top choice”. Probabilities come rounded to two decimals, so the chosen one may now be within 0.011 of the top.
+- **Wikipedia's lead photo was a link named “link”** (no alt text). An otherwise unnamed control is now named by its image file (“image: Tour Eiffel Wikimedia Commons (cropped)”). Wikipedia's photo viewer was dropped as a test: whether a click opens the viewer or the File: page depends on its script's load timing.
+- **Rules that tip DONE.** Every added sentence moved the balance between DONE and one more click on some page, so each change was checked by asking TypeSafe the same question several times on saved situations. Round 1's “a question is done once the page shows the answer” made DONE win on Google's web results for “cow images” (and was not needed: the weather result gets DONE at 0.99 without it), so it was removed. A “go back” rule made Jev return to Hacker News' front page after opening the comments it was asked for; `GO_BACK` is now described as only for requests that ask to go back, return or close.
