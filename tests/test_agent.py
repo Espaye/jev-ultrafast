@@ -320,6 +320,22 @@ def test_navigation_during_prediction_reobserves_without_action(runner):
     runner.state["browser"].act.assert_not_called()
 
 
+@pytest.mark.parametrize("page_changes, status", [(False, "blocked"), (True, "ready")])
+def test_a_target_rejected_again_on_an_unchanged_page_stops_the_run(runner, monkeypatch, page_changes, status):
+    monkeypatch.setattr(loop, "choose", Mock(return_value=decision("e3")))
+    runner.state["browser"].act.side_effect = StalePage("Target changed or is covered. Observe again.")
+    pages = iter(range(10))
+    runner.state["browser"].observe.side_effect = lambda **_: {
+        **page(),
+        "marker": next(pages) if page_changes else "same",
+    }
+    runner.state.update(page=runner.observe(), status="ready")
+    for _ in range(loop.STALE_REPEATS):
+        runner.command("tick")
+    assert runner.state["status"] == status
+    assert runner.state["history"] == []
+
+
 def test_follow_up_continues_on_the_open_page_with_earlier_requests_as_context(runner):
     runner.state.update(plan=["look up an image of a horse"], status="done", history=[{"action": "Images"}])
     runner.new_task("play a video of a horse")

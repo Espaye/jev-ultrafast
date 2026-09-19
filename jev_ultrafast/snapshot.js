@@ -52,11 +52,24 @@
       e.getAttribute('aria-expanded'),e.getAttribute('aria-checked'),e.getAttribute('aria-selected'),
       e.getAttribute('href'),scope?.innerText?.slice(0,6000)||''];
   };
+  // Where a click lands on the element itself. The box centre of an inline link wrapping blocks (a Google
+  // result) can fall in a gap or on a neighbour, so try each line box. Offering an element that input then
+  // rejects made the model pick it again forever; observation and input share this one hit test.
+  cache.point=e=>{
+    for (const r of [e.getBoundingClientRect(),...e.getClientRects()]) {
+      const left=Math.max(r.left,0), top=Math.max(r.top,0);
+      const right=Math.min(r.right,innerWidth), bottom=Math.min(r.bottom,innerHeight);
+      if (right-left<1 || bottom-top<1) continue;
+      const x=(left+right)/2, y=(top+bottom)/2;
+      if (e.contains(document.elementFromPoint(x,y))) return {x,y};
+    }
+    return null;
+  };
   const actions=[];
   for (const e of document.querySelectorAll(selector)) {
     if (!safe(e) || !visible(e) || e.matches(':disabled') || e.closest('[aria-disabled="true"]')) continue;
-    const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2, rname=role(e);
-    if (!rname || r.width<=0 || r.height<=0 || x<0 || y<0 || x>=innerWidth || y>=innerHeight) continue;
+    const r=e.getBoundingClientRect(), rname=role(e);
+    if (!rname || !cache.point(e)) continue;
     if (rname==='gridcell' && e.querySelector('button,[role="button"]')) continue;
     const base={node:identity(e),role:rname,label:name(e)||rname,
       rect:{x:r.x,y:r.y,w:r.width,h:r.height}};

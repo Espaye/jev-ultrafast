@@ -18,6 +18,7 @@ WEB_SEARCH = {
 }
 EARLIER_REQUESTS = 5
 CYCLE_REPEATS = 3
+STALE_REPEATS = 2
 
 
 def view(page, action):
@@ -106,6 +107,7 @@ class Agent:
             text_calls=[],
             elapsed_ms=0,
             started_at=None,
+            stale_repeats=0,
         )
         return self.snapshot()
 
@@ -119,8 +121,10 @@ class Agent:
         body = body or {}
         state = self.state
         if name == "tick":
+            acting = False
             try:
                 self.command("predict", {})
+                acting = True
                 return self.command(
                     "act", {"fingerprint": state["page"]["fingerprint"]}
                 )
@@ -167,6 +171,13 @@ class Agent:
                     f"  removed controls: {removed}",
                     flush=True,
                 )
+
+                # A rejected action on a page that did not change gets the same input, so the model repeats it.
+                stuck = acting and old_page.get("marker") == new_page.get("marker")
+                state["stale_repeats"] = state.get("stale_repeats", 0) + 1 if stuck else 0
+                if state["stale_repeats"] >= STALE_REPEATS:
+                    print(f"BLOCKED: {choice} was rejected {STALE_REPEATS} times on an unchanged page", flush=True)
+                    state["status"] = "blocked"
 
                 state["page"] = new_page
                 state["elapsed_ms"] = round(
@@ -236,6 +247,7 @@ class Agent:
             # Browser.act checks freshness immediately before input, including after text generation.
             state["browser"].act(action, page, text=text)
             self.pending_text = None
+            state["stale_repeats"] = 0
             state["elapsed_ms"] = round(
                 (time.perf_counter() - state["started_at"]) * 1000
             )
