@@ -18,7 +18,8 @@ DONE requires visible evidence that ALL requirements are satisfied. If asked to 
 a matching link is not enough. Recent actions are evidence too: once you opened the item that an earlier
 page showed as the requested one (such as the top of a newest-first list), choose DONE on it;
 never go back to re-check. BLOCKED means no supported operation can make progress.
-A page showing only a few controls right after it opened may still be building; WAIT before BLOCKED."""
+A page showing only a few controls right after it opened may still be building; WAIT before BLOCKED.
+If the needed link or control is not listed, it may be off screen: SCROLL_DOWN to look for it before BLOCKED."""
 
 TARGET = """Choose the best observed target if the next operation is the one specified in this question.
 Use the user's entire goal, field values, nearby text, and recent actions. This question chooses only
