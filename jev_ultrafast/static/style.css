@@ -137,6 +137,82 @@ select,
 button {
   font: inherit;
 }
+.scenario-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: #77776e;
+}
+.scenario-options[hidden] {
+  display: none;
+}
+.scenario-options .muted {
+  flex-basis: 100%;
+  margin: 0;
+}
+#custom-url {
+  font-size: 14px;
+  border-bottom: 1px solid var(--line);
+}
+#decoy {
+  max-width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: white;
+}
+.table-scroll {
+  overflow-x: auto;
+}
+.steering-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.steering-table th {
+  text-align: left;
+  font-weight: 500;
+  color: #8d9186;
+  padding: 8px 12px 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+.steering-table td {
+  padding: 10px 12px 10px 0;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+.steering-table td:first-child,
+.steering-table td:nth-child(5),
+.steering-table td:nth-child(6) {
+  font:
+    11px ui-monospace,
+    monospace;
+  color: #81897a;
+  white-space: nowrap;
+}
+.steering-table small {
+  display: block;
+  color: #93968b;
+  margin-top: 3px;
+}
+.outcome {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.outcome.correct {
+  color: var(--green);
+}
+.outcome.decoy {
+  color: #b4441c;
+}
+.outcome.none {
+  color: #8d9186;
+}
 select {
   border: 0;
   color: #64675e;
@@ -188,6 +264,11 @@ a:focus-visible {
   outline: 2px solid #2f8a60;
   outline-offset: 2px;
 }
+#mic.listening {
+  color: white;
+  background: var(--orange);
+  border-color: transparent;
+}
 .primary {
   background: var(--green);
   color: white;
@@ -212,6 +293,15 @@ a:focus-visible {
   gap: 9px;
   font-size: 13px;
 }
+#total-time {
+  padding-left: 9px;
+  border-left: 1px solid var(--line);
+  color: #6b6b66;
+}
+#total-time.finished {
+  color: var(--green);
+  font-weight: 600;
+}
 .controls {
   display: flex;
   align-items: center;
@@ -223,6 +313,9 @@ a:focus-visible {
   align-items: center;
   gap: 4px;
   margin-right: 12px;
+}
+.overlay-control[hidden] {
+  display: none;
 }
 .overlay-control input {
   accent-color: var(--green);

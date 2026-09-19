@@ -10,30 +10,115 @@ from browser_harness.admin import ensure_daemon
 from browser_harness.helpers import cdp
 
 # Atomically read visible content and controls, preserving actual DOM node identity.
-READ_STATE = Path(__file__).with_name("snapshot.js").read_text()
+READ_STATE = Path(__file__).with_name("snapshot.js").read_text(encoding="utf-8")
 MARKER = f"(() => {{ const state={READ_STATE}; return state?.marker ?? null; }})()"
+SEARCH_URL = "https://www.google.com/?hl=en"
+# Counts added/removed elements. Timing stays in Python: Chrome throttles timers in background tabs.
+MUTATIONS = """(() => {
+  if (!window.__jevMutations) {
+    window.__jevMutations = {count: 0};
+    new MutationObserver(records => { window.__jevMutations.count += records.length; })
+      .observe(document.documentElement, {childList: true, subtree: true});
+  }
+  return window.__jevMutations.count;
+})()"""
+
 
 class StalePage(ValueError):
     """A decision no longer refers to the observed page."""
 
 
+class BrowserGone(RuntimeError):
+    """The owned tab was closed or its CDP session detached; only a reset recovers."""
+
+
+def session_cdp(method, session, **params):
+    try:
+        return cdp(method, session_id=session, **params)
+    except RuntimeError as error:
+        message = str(error).lower()
+        if "session with given id not found" in message or "no session with given id" in message:
+            raise BrowserGone(
+                "The agent's browser tab was closed or disconnected. Click Start demo to open a fresh one."
+            ) from error
+        raise
+
+
 class Browser:
     def __init__(self, url):
         ensure_daemon()
-        self.target = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
-        self.session = cdp("Target.attachToTarget", targetId=self.target, flatten=True)["sessionId"]
+        self.attach(cdp("Target.createTarget", url="about:blank", background=True)["targetId"])
+        self.navigate(url)
+
+    def navigate(self, url):
+        self.after_input = None
+        self.call("Page.navigate", url=url)
+        self.wait_for_load()
+
+    def attach(self, target):
+        self.target = target
+        self.session = cdp("Target.attachToTarget", targetId=target, flatten=True)["sessionId"]
         self.call("Emulation.setDeviceMetricsOverride", width=1120, height=780, deviceScaleFactor=1, mobile=False)
         # Keep rAF/menus rendering in an owned background tab, without activating the user's Chrome tab.
         self.call("Emulation.setFocusEmulationEnabled", enabled=True)
-        self.call("Page.navigate", url=url)
+
+    def wait_for_load(self):
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
-            if self.evaluate("document.readyState") == "complete":
-                break
+            try:
+                if self.evaluate("document.readyState") == "complete":
+                    break
+            except StalePage:
+                pass  # A fresh tab can still be swapping documents.
             time.sleep(0.02)
+        self.settle()
+
+    def settle(self):
+        """Apps such as YouTube build the page after "load": wait for 150 ms without new elements, at most 1.5 s."""
+        deadline = time.monotonic() + 1.5
+        last, quiet_since = None, time.monotonic()
+        while time.monotonic() < deadline:
+            try:
+                count = self.evaluate(MUTATIONS)
+            except StalePage:
+                return  # Still navigating; observe() retries until the new document can be read.
+            now = time.monotonic()
+            if count != last:
+                last, quiet_since = count, now
+            elif now - quiet_since >= 0.15:
+                return
+            time.sleep(0.03)
+
+    def left_page(self):
+        """True when the last click loaded another document (Google → YouTube) or changed the address in the same
+        document (client-side routing, as on nos.nl). Either way the new page may still be building."""
+        try:
+            return self.evaluate("[performance.timeOrigin, location.href]") != self.clicked_page
+        except StalePage:
+            return True
+
+    def follow_new_tab(self):
+        """A link that opens a new tab (target=_blank, Google's "open in new window") moves the run there."""
+        opened = [
+            t["targetId"]
+            for t in cdp("Target.getTargets")["targetInfos"]
+            if t.get("openerId") == self.target and t["type"] == "page"
+        ]
+        if not opened:
+            return False
+        old = self.target
+        self.attach(opened[-1])
+        for extra in opened[:-1]:
+            cdp("Target.closeTarget", targetId=extra)
+        try:
+            cdp("Target.closeTarget", targetId=old)
+        except RuntimeError:
+            pass  # The opener may already be gone.
+        self.wait_for_load()
+        return True
 
     def call(self, method, **params):
-        return cdp(method, session_id=self.session, **params)
+        return session_cdp(method, self.session, **params)
 
     def evaluate(self, expression):
         response = self.call("Runtime.evaluate", expression=expression, returnByValue=True)
@@ -74,16 +159,19 @@ class Browser:
                 )
             except RuntimeError:
                 pass
-        for attempt in range(10):
+            if action["kind"] == "click" and not self.follow_new_tab() and self.left_page():
+                self.wait_for_load()
+        # A cross-site navigation (Google → YouTube) can take seconds to commit.
+        deadline = time.monotonic() + 3
+        while True:
             try:
                 return browser_operation(
                     {"operation": "observe", "session": self.session, "screenshot": screenshot}
                 )
             except StalePage:
-                if attempt == 9:
+                if time.monotonic() > deadline:
                     raise
                 time.sleep(0.02)
-        raise StalePage("Page did not settle")
 
     def fresh(self, page, action=None):
         if action is not None and action["kind"] in {"click", "select"}:
@@ -101,15 +189,25 @@ class Browser:
         if not self.fresh(page, action):
             raise StalePage("Page changed since this decision. Observe again.")
         if action["kind"] == "wait":
-            time.sleep(0.1)
+            # Until the document has loaded and stopped building, not a fixed sleep.
+            self.wait_for_load()
+        if action["kind"] == "search":
+            # A fixed address owned by code; the model never supplies a URL.
+            self.navigate(SEARCH_URL)
+            return {"executed": action["id"]}
+        # The document and address the click started on; marker = [performance.timeOrigin, location.href, ...].
+        self.clicked_page = page.get("marker", [None, None])[:2]
         result = browser_operation({"operation": "act", "session": self.session, "action": action, "text": text})
         self.after_input = action if action["kind"] != "wait" else None
         return result
 
     def close(self):
-        if self.target:
-            cdp("Target.closeTarget", targetId=self.target)
-            self.target = None
+        target, self.target = self.target, None
+        if target:
+            try:
+                cdp("Target.closeTarget", targetId=target)
+            except RuntimeError:
+                pass  # Already closed by the user or Chrome; nothing left to clean up.
 
 
 def fingerprint(state):
@@ -122,7 +220,7 @@ def browser_operation(request):
     session = request["session"]
 
     def call(method, **params):
-        return cdp(method, session_id=session, **params)
+        return session_cdp(method, session, **params)
 
     def evaluate(expression):
         result = call("Runtime.evaluate", expression=expression, returnByValue=True)
@@ -190,5 +288,9 @@ def browser_operation(request):
         raise StalePage("Document is navigating")
     info["fingerprint"] = fingerprint(info)
     if request.get("screenshot", True):
-        info["screenshot"] = call("Page.captureScreenshot", format="jpeg", quality=72)["data"]
+        # A background tab sometimes never produces a frame. Screenshots only feed the inspector, so skip it.
+        try:
+            info["screenshot"] = call("Page.captureScreenshot", format="jpeg", quality=72)["data"]
+        except TimeoutError:
+            info["screenshot"] = None
     return info

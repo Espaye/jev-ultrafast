@@ -89,7 +89,20 @@
       words.push(value); length+=value.length;
     }
   }
-  const text=words.join('\n').slice(0,6000), height=document.documentElement.scrollHeight;
+  // Pictures and videos have no text; name them so "show an image" or "play a video" has visible evidence.
+  const media=[];
+  for (const e of document.querySelectorAll('img,video,iframe')) {
+    if (media.length>=20) break;
+    const r=e.getBoundingClientRect();
+    if (r.width<48 || r.height<48 || r.bottom<=0 || r.top>=innerHeight || r.right<=0 || r.left>=innerWidth ||
+        !visible(e)) continue;
+    const label=(e.getAttribute('alt')||e.getAttribute('aria-label')||e.getAttribute('title')||'').trim().slice(0,80);
+    // An embedded player (a YouTube preview on Google) is a frame Jev cannot look inside; name it by its title.
+    media.push(e.tagName==='VIDEO' ? `[video, ${e.paused ? 'paused' : 'playing'}${label ? ': '+label : ''}]` :
+      e.tagName==='IFRAME' ? `[embedded frame${label ? ': '+label : ''}]` : `[image${label ? ': '+label : ''}]`);
+  }
+  const mediaText=media.join('\n'), height=document.documentElement.scrollHeight;
+  const text=[words.join('\n').slice(0,6000-mediaText.length-1),mediaText].filter(Boolean).join('\n');
   const page_key=cache.pageKey(), guards={};
   for (const a of actions) if (!(a.node in guards)) guards[a.node]=cache.guard(cache.nodes.get(a.node));
   // Compare meaning and identity. Geometry is always resolved and hit-tested just before input.

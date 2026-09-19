@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .agent import Agent
+from .browser import BrowserGone
 from .questions import MAX_STEPS
 
 ROOT = Path(__file__).parent
@@ -18,12 +19,16 @@ ORIGIN = f"http://127.0.0.1:{PORT}"
 TOKEN = secrets.token_urlsafe(32)
 LOCK = threading.Lock()
 AGENT = None
+# Steering test: how the decoy article in the reading room is worded (see fixture.html).
+DECOYS = {"none", "neutral", "suggestive", "verdict", "instruction"}
+# Real-web scenarios where each new request continues in the same tab.
+CONVERSATION = {"search", "custom"}
 
 
 def load_environment():
     path = Path.cwd() / ".env"
     if path.exists():
-        for line in path.read_text().splitlines():
+        for line in path.read_text(encoding="utf-8").splitlines():
             if "=" in line and not line.startswith("#"):
                 key, value = line.split("=", 1)
                 os.environ.setdefault(key, value)
@@ -36,30 +41,80 @@ def response_state():
 
 def close_browser():
     global AGENT
-    if AGENT:
-        AGENT.close()
-        AGENT = None
+    agent, AGENT = AGENT, None
+    if agent:
+        agent.close()
+
+
+def custom_url(value):
+    value = str(value or "").strip()
+    if value and "://" not in value:
+        value = "https://" + value
+    parsed = urlparse(value)
+    try:
+        parsed.port  # Rejects malformed hosts such as "javascript:alert(1)" after the https:// prefix.
+    except ValueError:
+        parsed = None
+    if not parsed or parsed.scheme not in {"http", "https"} or not parsed.hostname or len(value) > 2000:
+        raise ValueError("Enter a website address, e.g. https://example.com")
+    return value
+
+
+def scenario_url(scenario, body):
+    if scenario == "flights":
+        return "https://www.google.com/travel/flights?hl=en"
+    if scenario == "search":
+        # Tasks that name no website start here; Jev cannot use the address bar.
+        return "https://www.google.com/?hl=en"
+    if scenario in {"travel", "research"}:
+        return f"{ORIGIN}/fixture.html?scenario={scenario}"
+    if scenario == "steering":
+        decoy = body.get("decoy", "neutral")
+        if decoy not in DECOYS:
+            raise ValueError("Unknown decoy wording")
+        return f"{ORIGIN}/fixture.html?scenario=research&decoy={decoy}"
+    if scenario == "custom":
+        return custom_url(body.get("url"))
+    raise ValueError("Unknown demo scenario")
+
+
+def task_goal(body):
+    goal = body.get("goal", "").strip()
+    if not goal or len(goal) > 2000:
+        raise ValueError("Enter 1–2,000 characters")
+    return goal
+
+
+def start(scenario, url, goal, body):
+    global AGENT
+    close_browser()
+    AGENT = Agent(
+        url,
+        goal,
+        screenshots=True,
+        record_dir=Path.cwd() / "artifacts" / "frames" if body.get("record") else None,
+        # Real-web conversations may need another site; fixtures and the Flights demo stay where they are.
+        web_search=scenario in CONVERSATION,
+    )
+    AGENT.state["scenario"] = scenario
+    AGENT.state["decoy"] = body.get("decoy") if scenario == "steering" else None
 
 
 def command(name, body):
-    global AGENT
     if name == "reset":
         scenario = body.get("scenario", "flights")
-        if scenario not in {"travel", "research", "flights"}:
-            raise ValueError("Unknown demo scenario")
-        goal = body.get("goal", "").strip()
-        if not goal or len(goal) > 2000:
-            raise ValueError("Enter 1–2,000 characters")
-        close_browser()
-        AGENT = Agent(
-            "https://www.google.com/travel/flights?hl=en"
-            if scenario == "flights"
-            else f"{ORIGIN}/fixture.html?scenario={scenario}",
-            goal,
-            screenshots=True,
-            record_dir=Path.cwd() / "artifacts" / "frames" if body.get("record") else None,
-        )
-        AGENT.state["scenario"] = scenario
+        start(scenario, scenario_url(scenario, body), task_goal(body), body)
+    elif name == "continue":
+        # A follow-up request continues in the same tab, from the page the last request ended on.
+        goal = task_goal(body)
+        url = custom_url(body["url"]) if body.get("url") else None
+        try:
+            if AGENT is None or AGENT.state.get("scenario") not in CONVERSATION:
+                raise BrowserGone("No conversation to continue")
+            AGENT.new_task(goal, url)
+        except BrowserGone:
+            # Nothing to continue, or the user closed Jev's tab: start the request in a fresh one.
+            start("custom" if url else "search", url or scenario_url("search", body), goal, body)
     else:
         if AGENT is None:
             raise ValueError("Start a demo first")
@@ -98,7 +153,7 @@ class Handler(BaseHTTPRequestHandler):
         if path not in files:
             return self.send(404, "Not found", "text/plain")
         name, mime = files[path]
-        content = (ROOT / "static" / name).read_text().replace("__TOKEN__", TOKEN)
+        content = (ROOT / "static" / name).read_text(encoding="utf-8").replace("__TOKEN__", TOKEN)
         self.send(200, content, mime + "; charset=utf-8")
 
     def do_POST(self):
@@ -120,7 +175,7 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, RuntimeError, TimeoutError) as error:
             self.send(400, json.dumps({"error": str(error)}))
         except Exception:
-            self.send(500, json.dumps({"error": "Local demo failed; no automatic retry. Reset to recover."}))
+            self.send(500, json.dumps({"error": "Local demo failed; no automatic retry. Click Start demo to recover."}))
         finally:
             LOCK.release()
 

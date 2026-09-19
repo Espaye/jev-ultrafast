@@ -318,3 +318,97 @@ def test_navigation_during_prediction_reobserves_without_action(runner):
     assert runner.state["status"] == "ready"
     assert runner.state["decision"] is None
     runner.state["browser"].act.assert_not_called()
+
+
+def test_follow_up_continues_on_the_open_page_with_earlier_requests_as_context(runner):
+    runner.state.update(plan=["look up an image of a horse"], status="done", history=[{"action": "Images"}])
+    runner.new_task("play a video of a horse")
+    runner.state["browser"].navigate.assert_not_called()
+    assert runner.state["status"] == "ready" and runner.state["history"] == []
+    assert runner.state["plan"] == ["look up an image of a horse", "play a video of a horse"]
+    assert runner.state["plan_index"] == 1
+    goal = runner.state["goal"]
+    assert "- look up an image of a horse" in goal and goal.endswith("play a video of a horse")
+
+
+def test_follow_up_naming_a_site_opens_it_in_the_same_tab(runner):
+    runner.state["plan"] = ["look up elon musk on x.com"]
+    runner.new_task("open youtube.com", "https://youtube.com")
+    runner.state["browser"].navigate.assert_called_once_with("https://youtube.com")
+
+
+@pytest.mark.parametrize(("enabled", "url", "offered"), [
+    (False, "https://example.test/", False),
+    (True, "https://example.test/", True),
+    (True, "https://www.google.com/?hl=en", False),
+])
+def test_web_search_is_offered_only_in_conversations_and_away_from_search(runner, enabled, url, offered):
+    p = page()
+    p["url"] = url
+    runner.state["browser"].observe.return_value = p
+    runner.state["web_search"] = enabled
+    actions = runner.observe()["actions"]
+    assert (loop.WEB_SEARCH in actions) is offered
+    assert ("WEB_SEARCH" in model.action_space(actions)[2]) is offered
+
+
+def test_web_search_navigates_to_a_fixed_address(monkeypatch):
+    import jev_ultrafast.browser as browser
+
+    b = browser.Browser.__new__(browser.Browser)
+    b.fresh = Mock(return_value=True)
+    b.navigate = Mock()
+    operation = Mock()
+    monkeypatch.setattr(browser, "browser_operation", operation)
+    b.act(loop.WEB_SEARCH, page())
+    b.navigate.assert_called_once_with(browser.SEARCH_URL)
+    operation.assert_not_called()
+
+
+def test_a_click_that_opens_a_new_tab_moves_the_run_there(monkeypatch):
+    import jev_ultrafast.browser as browser
+
+    b = browser.Browser.__new__(browser.Browser)
+    b.target = "jev"
+    b.attach = Mock()
+    b.wait_for_load = Mock()
+    targets = [
+        {"targetId": "jev", "type": "page"},
+        {"targetId": "users-tab", "type": "page"},
+        {"targetId": "wiki", "type": "page", "openerId": "jev"},
+    ]
+    cdp = Mock(return_value={"targetInfos": targets})
+    monkeypatch.setattr(browser, "cdp", cdp)
+    b.follow_new_tab()
+    b.attach.assert_called_once_with("wiki")
+    cdp.assert_any_call("Target.closeTarget", targetId="jev")
+    assert all(c.kwargs.get("targetId") != "users-tab" for c in cdp.call_args_list)
+
+
+def test_cycling_between_pages_stops_even_when_nodes_are_rebuilt(runner):
+    def visit(url, label, node):
+        p = page()
+        p["url"] = url
+        p["actions"][2].update(label=label, node=node)  # e3; a client-side app rebuilds it on every visit
+        p["fingerprint"] = fingerprint(p)
+        return p
+
+    visits = [visit("https://example.test/a", "Home", 30 + i) if i % 2 == 0 else
+              visit("https://example.test/", "Newest article", 30 + i) for i in range(6)]
+    runner.state["page"] = visit("https://example.test/", "Newest article", 29)
+    runner.state["browser"].observe.side_effect = visits
+    for step in range(5):
+        runner.state["decision"] = decision("e3")
+        runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+        assert runner.state["status"] == ("blocked" if step == 4 else "ready")
+
+
+def test_a_client_side_route_change_counts_as_leaving_the_page():
+    import jev_ultrafast.browser as browser
+
+    b = browser.Browser.__new__(browser.Browser)
+    b.clicked_page = [1.0, "https://nos.nl/"]
+    b.evaluate = Mock(return_value=[1.0, "https://nos.nl/artikel/1"])
+    assert b.left_page()
+    b.evaluate.return_value = [1.0, "https://nos.nl/"]
+    assert not b.left_page()
