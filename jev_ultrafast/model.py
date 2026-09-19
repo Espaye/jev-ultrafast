@@ -7,7 +7,7 @@ import time
 
 import httpx
 
-from .questions import NEXT_ACTION, TARGET, TEXT_VALUE
+from .questions import MAP_PLACE, NEXT_ACTION, TARGET, TEXT_VALUE
 
 CLIENT = httpx.Client(http2=True, timeout=25)
 
@@ -55,7 +55,7 @@ def validate_choice(answer, ids):
 def action_space(actions):
     """One index per observed element; each operation has its own valid target choices."""
     elements, indices, targets, controls = [], {}, {}, {}
-    operations = {"click": "CLICK", "fill": "TYPE_TEXT", "select": "SELECT"}
+    operations = {"click": "CLICK", "fill": "TYPE_TEXT", "select": "SELECT", "place": "PLACE_ON_MAP"}
     for action in actions:
         kind = action["kind"]
         if kind not in operations:
@@ -99,6 +99,8 @@ def choose(state, goal, history):
         "CLICK": "Click an element, button, menu option, autocomplete suggestion, or calendar day.",
         "TYPE_TEXT": "Enter or replace text in an editable field. A small LLM will supply the value from the goal.",
         "SELECT": "Select an observed dropdown value.",
+        "PLACE_ON_MAP": "Click a location on an observed map: a requested place, or a guess the page asks for. "
+        "A helper that sees the page picks the location from the goal.",
     }
     operations = {key: labels[key] for key in targets}
     operations.update({key: value["label"] for key, value in controls.items()})
@@ -201,15 +203,77 @@ def field_context(goal, action, page, history):
     }
 
 
-def field_text(context):
+def helper_endpoint(operation):
     key = os.environ.get("TEXT_MODEL_API_KEY")
     if not key:
         raise ValueError(
-            "TYPE_TEXT needs TEXT_MODEL_API_KEY; no text is hardcoded or guessed by the executor."
+            f"{operation} needs TEXT_MODEL_API_KEY; no value is hardcoded or guessed by the executor."
         )
-    base = os.environ.get("TEXT_MODEL_BASE_URL", "https://api.deepseek.com/v1").rstrip(
-        "/"
+    return os.environ.get("TEXT_MODEL_BASE_URL", "https://api.deepseek.com/v1").rstrip("/"), key
+
+
+def map_context(goal, page, history):
+    return {
+        "goal": goal,
+        "page": {"title": page["title"], "text": page["text"][:6000]},
+        "recent_actions": [
+            {k: h.get(k) for k in ("action", "text")} for h in history[-6:]
+        ],
+    }
+
+
+def map_place(context, screenshot):
+    """A vision model reads the page (a photo, a question) and names a place; code owns the pixel."""
+    base, key = helper_endpoint("PLACE_ON_MAP")
+    model = os.environ.get("MAP_MODEL", "google/gemini-3.8-flash")
+    started = time.perf_counter()
+    result = post_json(
+        base + "/chat/completions",
+        key,
+        {
+            "model": model,
+            "max_tokens": 4096,
+            "response_format": {"type": "json_object"},
+            "reasoning": {"effort": os.environ.get("MAP_MODEL_REASONING", "low")},
+            "messages": [
+                {"role": "system", "content": MAP_PLACE},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": json.dumps(context)},
+                        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + screenshot}},
+                    ],
+                },
+            ],
+        },
     )
+    invalid = ValueError("Map helper returned no valid place; nothing clicked.")
+    try:
+        output = json.loads(result["choices"][0]["message"]["content"])
+        place, lat, lng = output["place"], output["lat"], output["lng"]
+    except (ValueError, KeyError, TypeError):
+        raise invalid from None
+    if set(output) != {"place", "lat", "lng"}:
+        raise invalid
+    latency_ms = round((time.perf_counter() - started) * 1000)
+    helper = {"model": model, "latency_ms": latency_ms, "usage": result.get("usage", {})}
+    if place is None:
+        print(f"MAP helper: nothing to place — {latency_ms} ms — {model}", flush=True)
+        return None, helper
+    if (
+        not isinstance(place, str)
+        or not place.strip()
+        or len(place) > 200
+        or not all(type(n) in (int, float) and math.isfinite(n) for n in (lat, lng))
+        or not (-85 <= lat <= 85 and -180 <= lng <= 180)
+    ):
+        raise invalid
+    print(f"MAP helper: {place!r} ({lat}, {lng}) — {latency_ms} ms — {model}", flush=True)
+    return {"place": place.strip(), "lat": lat, "lng": lng}, helper
+
+
+def field_text(context):
+    base, key = helper_endpoint("TYPE_TEXT")
     model = os.environ.get("TEXT_MODEL", "deepseek-chat")
     reasoning = (
         {"thinking": {"type": "disabled"}}

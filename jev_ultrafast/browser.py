@@ -174,7 +174,7 @@ class Browser:
                 time.sleep(0.02)
 
     def fresh(self, page, action=None):
-        if action is not None and action["kind"] in {"click", "select"}:
+        if action is not None and action["kind"] in {"click", "select", "place"}:
             node = action["node"]
             if type(node) is not int:
                 return False
@@ -185,7 +185,19 @@ class Browser:
             return current == [page["page_key"], page["guards"].get(str(node))]
         return self.evaluate(MARKER) == page["marker"]
 
-    def act(self, action, page, text=None):
+    def screenshot(self):
+        """The viewport as JPEG base64, for the map helper that has to see the page. A background tab sometimes
+        produces no frame; a read is safe to repeat, and captureBeyondViewport forces a fresh composite."""
+        for attempt in range(3):
+            try:
+                return self.call(
+                    "Page.captureScreenshot", format="jpeg", quality=80, captureBeyondViewport=attempt > 0
+                )["data"]
+            except TimeoutError:
+                if attempt == 2:
+                    raise StalePage("The tab produced no screenshot for the map helper. Observe again.") from None
+
+    def act(self, action, page, text=None, place=None):
         if not self.fresh(page, action):
             raise StalePage("Page changed since this decision. Observe again.")
         if action["kind"] == "wait":
@@ -197,7 +209,9 @@ class Browser:
             return {"executed": action["id"]}
         # The document and address the click started on; marker = [performance.timeOrigin, location.href, ...].
         self.clicked_page = page.get("marker", [None, None])[:2]
-        result = browser_operation({"operation": "act", "session": self.session, "action": action, "text": text})
+        result = browser_operation(
+            {"operation": "act", "session": self.session, "action": action, "text": text, "place": place}
+        )
         self.after_input = action if action["kind"] != "wait" else None
         return result
 
@@ -213,6 +227,53 @@ class Browser:
 def fingerprint(state):
     content = {k: state[k] for k in ("url", "text", "actions", "scroll")}
     return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
+
+
+# Runs a map helper from snapshot.js on the observed map node: mapPoint (pixel for a place) or mapPan (drag).
+MAP = """(({node, lat, lng}, method) => {
+  const c=window.__jevFast, e=c?.nodes.get(node);
+  return e?.isConnected ? c[method](e, lat, lng) : null;
+})"""
+
+
+def place_on_map(call, evaluate, action, place):
+    """Click a latitude/longitude on an observed tile map. The pixel comes from the tiles, never from the model.
+    A place under an overlay or off screen is first dragged into open map, the way a person pans."""
+    if type(action["node"]) is not int:
+        raise ValueError("Invalid observed node")
+    args = json.dumps({"node": action["node"], "lat": place["lat"], "lng": place["lng"]})
+
+    def locate(method):
+        return evaluate(f"{MAP}({args}, {json.dumps(method)})")
+
+    point = locate("mapPoint")
+    if point is None:
+        raise StalePage("The map is gone or has no tiles. Observe again.")
+    if not point["open"]:
+        pan = locate("mapPan")
+        if pan is None:
+            raise StalePage("No open part of the map to move the place into. Observe again.")
+        (x, y), (tx, ty) = (pan["from"]["x"], pan["from"]["y"]), (pan["to"]["x"], pan["to"]["y"])
+        call("Input.dispatchMouseEvent", type="mousePressed", x=x, y=y, button="left", clickCount=1)
+        # Slow, even steps: a fast flick makes maps coast on after release (inertia).
+        for step in range(1, 13):
+            time.sleep(0.05)
+            call("Input.dispatchMouseEvent", type="mouseMoved", x=x + (tx - x) * step / 12,
+                 y=y + (ty - y) * step / 12, button="left", buttons=1)
+        call("Input.dispatchMouseEvent", type="mouseReleased", x=tx, y=ty, button="left", clickCount=1)
+        # Wait until the tiles stop moving before projecting again.
+        last, deadline = None, time.monotonic() + 2
+        while time.monotonic() < deadline:
+            view = evaluate(f"(({{node}}) => window.__jevFast.mapView(window.__jevFast.nodes.get(node)))({args})")
+            if view is not None and view == last:
+                break
+            last = view
+            time.sleep(0.08)
+        point = locate("mapPoint")
+        if point is None or not point["open"]:
+            raise StalePage("The place is still covered after moving the map. Observe again.")
+    for event in ("mousePressed", "mouseReleased"):
+        call("Input.dispatchMouseEvent", type=event, x=point["x"], y=point["y"], button="left", clickCount=1)
 
 
 def browser_operation(request):
@@ -235,6 +296,8 @@ def browser_operation(request):
         kind = action["kind"]
         if kind == "scroll":
             call("Input.dispatchMouseEvent", type="mouseWheel", x=550, y=650, deltaX=0, deltaY=action["delta"])
+        elif kind == "place":
+            place_on_map(call, evaluate, action, request["place"])
         elif kind != "wait":
             if type(action["node"]) is not int:
                 raise ValueError("Invalid observed node")

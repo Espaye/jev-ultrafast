@@ -432,3 +432,77 @@ def test_a_client_side_route_change_counts_as_leaving_the_page():
     assert b.left_page()
     b.evaluate.return_value = [1.0, "https://nos.nl/"]
     assert not b.left_page()
+
+
+def map_page():
+    p = page()
+    p["actions"].insert(0, {"id": "e0", "kind": "place", "label": "Map", "role": "map", "value": "", "node": 5})
+    p["fingerprint"] = fingerprint(p)
+    return p
+
+
+def map_reply(content):
+    return Mock(return_value={"choices": [{"message": {"content": content}}]})
+
+
+def test_a_tile_map_is_one_element_with_its_own_operation():
+    elements, targets, _ = model.action_space(map_page()["actions"])
+    assert elements[0]["role"] == "map" and elements[0]["operations"] == ["PLACE_ON_MAP"]
+    assert targets["PLACE_ON_MAP"]["1"]["id"] == "e0"
+
+
+def test_map_helper_sees_the_screenshot_and_returns_a_place_not_a_pixel(monkeypatch):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    post = map_reply('{"place":"Kerala","lat":10.85,"lng":76.27}')
+    monkeypatch.setattr(model, "post_json", post)
+    place, helper = model.map_place(model.map_context("Guess", page(), []), "SCREENSHOT")
+    assert place == {"place": "Kerala", "lat": 10.85, "lng": 76.27}
+    content = post.call_args.args[2]["messages"][1]["content"]
+    assert content[1]["image_url"]["url"] == "data:image/jpeg;base64,SCREENSHOT"
+
+
+@pytest.mark.parametrize("content", [
+    '{"place":"X","lat":91,"lng":0}', '{"place":"X","lat":0,"lng":200}', '{"place":"X","lat":"10","lng":0}',
+    '{"place":"","lat":0,"lng":0}', '{"place":"X","lat":0,"lng":0,"x":5}', '{"place":"X","lat":0}', "Kerala",
+])
+def test_map_helper_rejects_invalid_places(monkeypatch, content):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    monkeypatch.setattr(model, "post_json", map_reply(content))
+    with pytest.raises(ValueError, match="nothing clicked"):
+        model.map_place({"goal": "Guess"}, "SCREENSHOT")
+
+
+def test_placing_passes_coordinates_to_the_executor_and_logs_them(runner, monkeypatch):
+    runner.state.update(page=map_page(), decision={**decision("e0"), "operation": "PLACE_ON_MAP"})
+    runner.state["browser"].screenshot = Mock(return_value="SHOT")
+    place = {"place": "Kerala", "lat": 10.85, "lng": 76.27}
+    monkeypatch.setattr(loop, "map_place", Mock(return_value=(place, {"model": "test", "latency_ms": 5})))
+    runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+    assert runner.state["browser"].act.call_args.kwargs["place"] == place
+    assert runner.state["history"][-1]["text"] == "Kerala (10.85, 76.27)"
+
+
+def test_a_placed_point_shows_as_the_map_value_until_another_action(runner, monkeypatch):
+    choose = Mock(return_value=decision("e3"))
+    monkeypatch.setattr(loop, "choose", choose)
+    runner.state.update(page=map_page(), status="ready")
+    runner.state["history"] = [{"kind": "place", "text": "Kerala (10.85, 76.27)", "page_changed": True}]
+    runner.command("predict")
+    assert choose.call_args.args[0]["actions"][0]["value"] == "point placed: Kerala (10.85, 76.27)"
+    runner.state["history"].append({"kind": "click", "text": None, "page_changed": True})
+    runner.state["status"] = "ready"
+    runner.command("predict")
+    assert choose.call_args.args[0]["actions"][0]["value"] == ""
+
+
+def test_a_declined_placement_clicks_nothing_and_hides_the_map_on_that_page(runner, monkeypatch):
+    runner.state.update(page=map_page(), decision={**decision("e0"), "operation": "PLACE_ON_MAP"})
+    runner.state["browser"].screenshot = Mock(return_value="SHOT")
+    monkeypatch.setattr(loop, "map_place", Mock(return_value=(None, {"model": "test", "latency_ms": 5})))
+    runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+    runner.state["browser"].act.assert_not_called()
+    assert runner.state["history"][-1]["page_changed"] is False and runner.state["status"] == "ready"
+    choose = Mock(return_value=decision("e3"))
+    monkeypatch.setattr(loop, "choose", choose)
+    runner.command("predict")
+    assert all(a["kind"] != "place" for a in choose.call_args.args[0]["actions"])

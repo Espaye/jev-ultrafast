@@ -8,7 +8,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .browser import SEARCH_URL, Browser, StalePage
-from .model import action_space, choose, field_context, field_text
+from .model import action_space, choose, field_context, field_text, map_context, map_place
 from .questions import MAX_STEPS
 
 WEB_SEARCH = {
@@ -201,7 +201,19 @@ class Agent:
                 raise ValueError("This run has stopped. Start a fresh demo.")
             if len(state["decisions"]) >= MAX_STEPS * 2:
                 raise ValueError("Reached the demo's model-call budget")
-            state["decision"] = choose(state["page"], state["goal"], state["history"])
+            page = state["page"]
+            if state.get("map_declined") == page["fingerprint"]:
+                # The helper that sees this exact page found nothing to place; offering the map again repeats it.
+                page = {**page, "actions": [a for a in page["actions"] if a["kind"] != "place"]}
+            last = state["history"][-1] if state["history"] else None
+            if last and last["kind"] == "place" and last["page_changed"] is not False:
+                # Like a filled field's value: the map holds the point placed by the last action, until another
+                # action (confirming it, the next round) runs.
+                page = {**page, "actions": [
+                    {**a, "value": f"point placed: {last['text']}"} if a["kind"] == "place" else a
+                    for a in page["actions"]
+                ]}
+            state["decision"] = choose(page, state["goal"], state["history"])
             state["decisions"].append(
                 {
                     **state["decision"],
@@ -234,8 +246,44 @@ class Agent:
             if len(state["history"]) >= MAX_STEPS:
                 state["status"] = "blocked"
                 raise ValueError(f"Stopped at the {MAX_STEPS}-action demo budget")
-            text, helper = None, None
-            if action["kind"] == "fill":
+            text, helper, place = None, None, None
+            if action["kind"] == "place":
+                if not state["browser"].fresh(page):
+                    raise StalePage("Page changed before choosing a map location. Choose again.")
+                context = {"map": map_context(state["goal"], page, state["history"]), "view": page["fingerprint"]}
+                if self.pending_text and self.pending_text[0] == context:
+                    _, place, helper = self.pending_text
+                else:
+                    place, helper = map_place(context["map"], state["browser"].screenshot())
+                    self.pending_text = (context, place, helper)
+                    state["text_calls"].append(
+                        {**helper, "field": action["label"], "value": place["place"] if place else None}
+                    )
+                if place is None:
+                    # The helper saw no location to place (a scored round still titled "Place your guess").
+                    # Nothing ran; recording that lets the next choice move on, and the no-progress stop bounds it.
+                    self.pending_text = None
+                    state["map_declined"] = page["fingerprint"]
+                    state["history"].append({
+                        "step": len(state["history"]) + 1,
+                        "action": action["label"],
+                        "kind": "place",
+                        "choice": selected,
+                        "text": "not placed: the page asks for no map location now",
+                        "page_changed": False,
+                        "url": page["url"],
+                        "from_view": view(page, action),
+                        "latency_ms": decision["latency_ms"],
+                        "text_helper": helper["model"],
+                        "text_latency_ms": helper["latency_ms"],
+                        "elapsed_ms": round((time.perf_counter() - state["started_at"]) * 1000),
+                    })
+                    repeated = state["history"][-3:]
+                    stuck = len(repeated) == 3 and all(h["page_changed"] is False for h in repeated)
+                    state["status"] = "blocked" if stuck else "ready"
+                    return self.snapshot()
+                text = f"{place['place']} ({place['lat']:.2f}, {place['lng']:.2f})"
+            elif action["kind"] == "fill":
                 if not state["browser"].fresh(page):
                     raise StalePage(
                         "Page changed before text generation. Choose again."
@@ -250,7 +298,10 @@ class Agent:
                         {**helper, "field": action["label"], "value": text}
                     )
             # Browser.act checks freshness immediately before input, including after text generation.
-            state["browser"].act(action, page, text=text)
+            if place:
+                state["browser"].act(action, page, place=place)
+            else:
+                state["browser"].act(action, page, text=text)
             self.pending_text = None
             state["stale_repeats"] = 0
             state["elapsed_ms"] = round(

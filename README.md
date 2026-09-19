@@ -62,7 +62,7 @@ Every observation of the page becomes a fresh, numbered element table:
 ...
 ```
 
-One TypeSafe request answers two questions at once: which **operation** (`CLICK`, `TYPE_TEXT`, `SELECT`, `SCROLL_UP`, `SCROLL_DOWN`, `WAIT`, `WEB_SEARCH`, `DONE`, `BLOCKED`) and which **element** for each operation that needs one. Only the head matching the chosen operation can execute. When the operation is `TYPE_TEXT`, a small LLM writes the value from the request.
+One TypeSafe request answers two questions at once: which **operation** (`CLICK`, `TYPE_TEXT`, `SELECT`, `PLACE_ON_MAP`, `SCROLL_UP`, `SCROLL_DOWN`, `WAIT`, `WEB_SEARCH`, `DONE`, `BLOCKED`) and which **element** for each operation that needs one. Only the head matching the chosen operation can execute. When the operation is `TYPE_TEXT`, a small LLM writes the value from the request. When it is `PLACE_ON_MAP` (a map built from `z/x/y` tiles, such as Leaflet), a vision model looks at a screenshot and names a place with its latitude and longitude.
 
 ```text
 spoken request ─→ transcript ─→ goal (+ earlier requests as context)
@@ -70,10 +70,11 @@ spoken request ─→ transcript ─→ goal (+ earlier requests as context)
 page ─→ element table ─→ one TypeSafe request ─→ operation + element
                                    │
                CLICK [3] ──────────┼──→ browser ─→ observe again
-           TYPE_TEXT [2] ─→ small LLM ─→ text ─┘
+           TYPE_TEXT [2] ─→ small LLM ─→ text ─┤
+        PLACE_ON_MAP [1] ─→ vision LLM ─→ lat/lng ─┘
 ```
 
-Model output never becomes selectors, coordinates, URLs or code. Every target is an observed DOM node; the executor rechecks that the page has not changed and that nothing covers the element before input. `WEB_SEARCH` goes to a fixed Google address owned by code.
+Model output never becomes selectors, screen coordinates, URLs or code. A map place is a latitude and longitude; code projects it onto the observed map from its tiles, drags it out from under an overlay if needed, and hit-tests the pixel. Every target is an observed DOM node; the executor rechecks that the page has not changed and that nothing covers the element before input. `WEB_SEARCH` goes to a fixed Google address owned by code.
 
 ## What this fork changes
 

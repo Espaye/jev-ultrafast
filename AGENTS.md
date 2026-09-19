@@ -5,6 +5,7 @@ Read README.md before editing. Keep the loop small: page -> indexed elements -> 
 - The input is one natural-language goal. Do not add site-specific plans or hardcoded field values.
 - TypeSafe chooses an operation and operation-specific target heads in one request. Consume only the selected operation's target.
 - Targets must map to observed elements and supported operations. Never let the model emit selectors or executable code.
+- PLACE_ON_MAP invokes the vision helper for a latitude/longitude only; code owns the projection, panning and hit test.
 - TYPE_TEXT invokes the text LLM. Cache a stale retry's value only while its entire helper input is identical.
 - Never retry a browser mutation. Log execution before observing its result.
 - Screenshots are optional; the model does not consume them. Keep demonstration footage at its original speed.
