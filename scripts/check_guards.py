@@ -5,7 +5,7 @@ from urllib.parse import quote
 from jev_ultrafast.browser import Browser, StalePage
 
 HTML = """<!doctype html><title>Guard checks</title>
-<style>body{margin:30px}button{width:180px;height:50px}#outside{position:absolute;top:3000px}</style>
+<style>body{margin:30px}button{width:180px;height:50px}label{display:block}#outside{position:absolute;top:3000px}</style>
 <p id="context">Cart total: $10</p>
 <button id="target" onclick="window.clicks=(window.clicks||0)+1">Continue</button>
 <label>City<input id="field" value="Zurich"></label>
@@ -53,11 +53,14 @@ def main():
                          "document.querySelector('#target').style.display='block'")
         page = browser.observe(screenshot=False)
         action = next(a for a in page["actions"] if a["label"] == "Delete account")
-        # A textless overlay does not alter the model's semantic state, but must block a click.
+        # A textless overlay leaves the target's own guard intact, so input's hit test must block the click.
+        # Observation shares that hit test: covered controls drop out, so the page as a whole is no longer fresh.
         browser.evaluate("const cover=document.createElement('div'); "
                          "cover.style.cssText='position:fixed;inset:0;z-index:9999;background:white'; "
                          "document.body.append(cover)")
-        assert browser.fresh(page)
+        assert browser.fresh(page, action)
+        assert not browser.fresh(page)
+        assert not any(a["label"] == "Delete account" for a in browser.observe(screenshot=False)["actions"])
         try:
             browser.act(action, page)
         except (RuntimeError, StalePage):
