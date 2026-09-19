@@ -5,6 +5,7 @@ import hashlib
 import json
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from .browser import SEARCH_URL, Browser, StalePage
 from .model import action_space, choose, field_context, field_text
@@ -13,8 +14,10 @@ from .questions import MAX_STEPS
 WEB_SEARCH = {
     "id": "web_search",
     "kind": "search",
-    "label": "Leave this page for an empty Google search. Only when nothing on the current page "
-    "(links, tabs such as Images or Videos, buttons, its own search box) can advance the request.",
+    # Naming the site makes "is this request about {site}?" a concrete comparison. The earlier wording
+    # ("only when ... its own search box cannot advance the request") kept unrelated requests in a site's search.
+    "label": "Open an empty Google search to search the whole web instead of {site}. Choose it when the "
+    "request is about something {site} does not cover; {site}'s own search box only finds {site} content.",
 }
 EARLIER_REQUESTS = 5
 CYCLE_REPEATS = 3
@@ -79,7 +82,9 @@ class Agent:
     def observe(self):
         page = self.state["browser"].observe(screenshot=self.screenshots)
         if self.state.get("web_search") and not page["url"].startswith(SEARCH_URL):
-            page["actions"].append(WEB_SEARCH)
+            site = urlsplit(page["url"]).hostname or "this site"
+            site = site.removeprefix("www.")
+            page["actions"].append({**WEB_SEARCH, "label": WEB_SEARCH["label"].format(site=site)})
         return page
 
     def new_task(self, goal, url=None):

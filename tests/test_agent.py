@@ -364,8 +364,12 @@ def test_web_search_is_offered_only_in_conversations_and_away_from_search(runner
     runner.state["browser"].observe.return_value = p
     runner.state["web_search"] = enabled
     actions = runner.observe()["actions"]
-    assert (loop.WEB_SEARCH in actions) is offered
+    search = next((a for a in actions if a["id"] == "web_search"), None)
+    assert (search is not None) is offered
     assert ("WEB_SEARCH" in model.action_space(actions)[2]) is offered
+    if search:
+        # Names the open site, so the model weighs "is this request about example.test?".
+        assert "instead of example.test" in search["label"] and "{site}" not in search["label"]
 
 
 def test_web_search_navigates_to_a_fixed_address(monkeypatch):
