@@ -39,7 +39,7 @@ cp .env.example .env
 uv run jev
 ```
 
-Open **http://127.0.0.1:8766** in Chrome, click **🎤 Speak**, and say what you want. Tick **Keep listening** to hold a conversation: the mic reopens after each spoken answer ("Done in 3 seconds.") until you say *"stop"*. Typing a request works the same way.
+Open **http://127.0.0.1:8766** in Chrome, click **🎤 Speak**, and say what you want. Tick **Keep listening** to hold a conversation: the mic stays open, including while Jev works, until you say *"stop listening"* or click it off. Talking over a run pauses it after the current step: *"stop"* or *"wait"* ends that task, anything else ("no, the blue one") replaces it as a correction, and a cough lets it carry on. The mic is muted while Jev speaks its answer ("Done in 3 seconds.") so it doesn't hear itself. Typing a request works the same way.
 
 - A request that names a site (*"open news.ycombinator.com"*) opens it. Otherwise Jev starts from a Google search; it cannot use the address bar.
 - Follow-ups (*"play the video"*, *"open its channel"*) continue in Jev's tab, with earlier requests as context.

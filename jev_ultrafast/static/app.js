@@ -367,12 +367,12 @@ const runAutomatically = () =>
   perform(async () => {
     automatic = true;
     controls();
-    for (let i = 0; i < state.max_steps * 2 && automatic; i++) {
+    for (let i = 0; i < state.max_steps * 2 && automatic && !interrupted; i++) {
       $("status").textContent = "Running…";
       if ($("pace").checked) {
         await call("predict");
         await new Promise(resolve => setTimeout(resolve, 450));
-        if (!automatic) break;
+        if (!automatic || interrupted) break;
         await call("act", {fingerprint: state.page.fingerprint});
       } else {
         await call("tick");
@@ -383,35 +383,47 @@ const runAutomatically = () =>
   }, "Running the browser…");
 $("auto").addEventListener("click", runAutomatically);
 // Voice: Chrome's built-in speech recognition fills the task, then starts the run.
-// With "Keep listening" on, the mic reopens after each spoken answer until you click it off or say "stop".
+// With "Keep listening" on, the mic stays open during runs too, so you can talk over a misunderstanding:
+// speaking pauses Jev after its current step, then "stop" ends the task, anything else replaces it as a
+// correction, and noise with no words lets it carry on. Click the mic off or say "stop listening" to end.
 const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+const STOP_TASK = /^(stop|wait|cancel|pause|hold on|never ?mind|no)[.!]?$/i;
+const END_CONVERSATION = /^(stop listening|that's all|that is all|goodbye|bye)[.!]?$/i;
+let speaking = false,
+  interrupted = null; // A run paused because you started talking: {voice} restores it if you said nothing.
 function say(text, then = () => {}) {
   if (!window.speechSynthesis) return then();
   speechSynthesis.cancel();
+  speaking = true;
+  listening?.abort(); // The mic must not hear Jev's answer as your next request.
   utterance = new SpeechSynthesisUtterance(text);
   utterance.lang = "en-US";
   utterance.onend = utterance.onerror = () => {
     utterance = null;
+    speaking = false;
     then();
   };
   speechSynthesis.speak(utterance);
 }
+function keepListening() {
+  if (conversation && !speaking && !listening) listen();
+}
+// A step already sent to the browser finishes first; act on what you said once the run has let go.
+function whenIdle(fn) {
+  if (busy) setTimeout(() => whenIdle(fn), 100);
+  else fn();
+}
 // Speaks a voice run's outcome, then reopens the mic if the conversation is still on.
 function answer(text) {
   voiceRun = false;
-  const reopen = () => {
-    if (!conversation || listening) return;
-    if (busy) return setTimeout(reopen, 200); // The run may still be wrapping up after the answer.
-    listen();
-  };
-  say(text, reopen);
+  say(text, keepListening);
 }
 function micLabel() {
   $("mic").classList.toggle("listening", !!listening || conversation);
-  $("mic").textContent = listening
-    ? "● Listening… click to stop"
-    : conversation
-      ? "● Mic on · click to end"
+  $("mic").textContent = conversation
+    ? "● Mic on · click to end"
+    : listening
+      ? "● Listening… click to stop"
       : "🎤 Speak";
 }
 function endConversation() {
@@ -427,13 +439,25 @@ function listen() {
   const previous = $("goal").value;
   let transcript = "",
     final = false,
-    failed = false;
+    failed = false,
+    dropped = false;
   recognition.onresult = (event) => {
     transcript = [...event.results].map((r) => r[0].transcript).join("").trim();
     final = event.results[event.results.length - 1].isFinal;
-    $("goal").value = transcript;
+    if (!busy && !interrupted) {
+      $("goal").value = transcript;
+      return;
+    }
+    // Talking over a run pauses it at the first recognised word; waiting for the full sentence lets a
+    // misunderstood task run on for seconds.
+    if (transcript && !interrupted) {
+      interrupted = { voice: voiceRun };
+      automatic = voiceRun = false;
+    }
+    if (interrupted) $("status").textContent = `Heard “${transcript}” · pausing…`;
   };
   recognition.onerror = (event) => {
+    if (event.error === "aborted") dropped = true;
     if (event.error === "no-speech" || event.error === "aborted") return;
     failed = true;
     $("error").textContent =
@@ -443,22 +467,45 @@ function listen() {
     $("error").hidden = false;
   };
   recognition.onend = () => {
-    listening = null;
+    if (listening === recognition) listening = null;
     if (failed) conversation = false;
-    if (final && /^(stop|stop listening|that's all|that is all|goodbye|bye)[.!]?$/i.test(transcript)) {
-      $("goal").value = previous;
+    const heard = final && !dropped ? transcript : "";
+    const paused = interrupted;
+    if (!paused && !busy && !heard) $("goal").value = previous;
+    // With no run to stop, a plain "stop" still ends the conversation, as before.
+    if (END_CONVERSATION.test(heard) || (!paused && /^stop[.!]?$/i.test(heard))) {
+      if (!paused) $("goal").value = previous;
       endConversation();
-      say("Okay, I stopped listening.");
-    } else if (final && transcript) {
-      micLabel();
+      return whenIdle(() => {
+        interrupted = null;
+        if (paused) stopClock(true);
+        say("Okay, I stopped listening.");
+      });
+    }
+    micLabel();
+    if (paused) {
+      whenIdle(() => {
+        interrupted = null;
+        if (STOP_TASK.test(heard)) {
+          stopClock(true);
+          $("status").textContent = "Stopped · you asked Jev to stop";
+          answer("Okay, I stopped.");
+        } else if (heard) {
+          // A correction becomes the next request in the same tab; the paused one is kept as "not finished".
+          $("goal").value = heard;
+          pendingVoice = true;
+          $("task-form").requestSubmit();
+        } else {
+          voiceRun = paused.voice;
+          runAutomatically();
+        }
+      });
+    } else if (heard) {
       pendingVoice = true;
       $("task-form").requestSubmit();
-    } else {
-      $("goal").value = previous;
-      micLabel();
-      // Silence ends Chrome's recognizer after a few seconds; keep the mic open while the conversation is on.
-      if (conversation) setTimeout(() => conversation && !busy && !listening && listen(), 250);
     }
+    // Chrome ends recognition after a pause in speech; reopen it, during runs too, while the conversation is on.
+    setTimeout(keepListening, 250);
   };
   $("error").hidden = true;
   listening = recognition;
