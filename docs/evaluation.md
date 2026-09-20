@@ -104,3 +104,38 @@ The same final code, rerun on the earlier suites: spoken answers **17/18** (the 
 - **TypeSafe returned a near-tie (0.33 chosen beside 0.34)** and the validator rejected it as “not the top choice”. Probabilities come rounded to two decimals, so the chosen one may now be within 0.011 of the top.
 - **Wikipedia's lead photo was a link named “link”** (no alt text). An otherwise unnamed control is now named by its image file (“image: Tour Eiffel Wikimedia Commons (cropped)”). Wikipedia's photo viewer was dropped as a test: whether a click opens the viewer or the File: page depends on its script's load timing.
 - **Rules that tip DONE.** Every added sentence moved the balance between DONE and one more click on some page, so each change was checked by asking TypeSafe the same question several times on saved situations. Round 1's “a question is done once the page shows the answer” made DONE win on Google's web results for “cow images” (and was not needed: the weather result gets DONE at 0.99 without it), so it was removed. A “go back” rule made Jev return to Hacker News' front page after opening the comments it was asked for; `GO_BACK` is now described as only for requests that ask to go back, return or close.
+
+# Evaluation: state that only colour carries
+
+**No new operation.** This round is a change to what Jev sees. A page often says what something *means* only in its colour: a guessed letter marked right or absent, a field marked invalid, a calendar day marked unavailable. The characters already reached Jev; their state did not, so a scored Wordle board read as five bare letters.
+
+`snapshot.js` now annotates visible text with the state its markup carries: class tokens and `data-state`/`data-status` matched against a vocabulary of state words, looking at the text's own element and at most two ancestors. A tile reads `c (absent)`. Nothing here is specific to a site or a game — the same code covers a rejected form field, a closed day, a status badge.
+
+| Suite | Before | This round | Requests |
+| --- | --- | --- | --- |
+| [`scripts/conversations.py`](../scripts/conversations.py) | 23/30 | **23/30** | 3 runs of 10, median 5.0 s, median 3 decisions |
+| [`scripts/answers.py`](../scripts/answers.py) | 17/18 | **18/18** | 3 runs of 6 |
+| [`scripts/keys.py`](../scripts/keys.py) | 13/15 | **15/15** | 3 runs of 5 |
+
+| Conversation | Request | Passed | Median time | Median decisions |
+| --- | --- | --- | --- | --- |
+| 2048 (local fixture) | “play 2048 with the arrow keys until the score is at least 100” | 3/3 | 16.5 s | 23 |
+| wordly.org | “guess the word crane” | 3/3 | 7.1 s | 3 |
+|  | “now guess slate” | 3/3 | 9.4 s | 5 |
+| Hacker News | “open the comments of the top story” | 3/3 | 3.1 s | 2 |
+|  | “go back to the front page” | 3/3 | 2.9 s | 2 |
+
+Both wordly.org misses from the previous round are gone. The plausible reason is that a landed guess now looks different from an empty row, so the text model no longer retypes a word the page had already accepted — but 15 requests is a small sample and 13/15 → 15/15 is not on its own proof of cause.
+
+The conversation total is unchanged, failure for failure: “look up a picture of a cow” / “show me sheep instead” 0/6 (the same Google drift the previous round measured against `482407b`), plus one “play the first video”.
+
+## What this round does not show
+
+Jev is not shown here *using* the feedback. Wordle and Globle put every earlier guess on screen, so reading them tests observation, not learning: no check here requires a second guess to respect what the first revealed. Nothing carries between pages either — the field helper gets the current page's text and the last six actions, so a fact read on one page is gone by the next. Both are open.
+
+## What development turned up
+
+- **A word describing the container is not the thing's own state.** wordly.org marks a submitted row `Row-locked-in` while its tiles are still flipping. Annotating a colourless tile `(locked)` from its row stated a fact the page had not settled, so `locked` is deliberately absent from the vocabulary: a bare letter honestly reads as “no feedback yet”, a wrong state reads as fact. The ancestor walk stops after two levels for the same reason — a page-level wrapper marked `active` must not annotate every word on the page.
+- **The flip is slow and staggered.** Four seconds after Enter a real board is still only part-scored, so observing straight after a key press yields a half-read board. The existing `wait` control covers it; nothing yet tells Jev to use it.
+- **The annotation is quiet in practice.** Measured on the suites' own sites: 2 annotations on the whole Eiffel Tower article, 0 on Hacker News, Google results, YouTube and nu.nl. The feared noise from `active`/`current` on navigation links did not appear.
+- **Two providers spell reasoning differently.** The field helper returned nothing on roughly one call in forty. It was not the model failing: reasoning tokens were filling the 1024-token window until the reply came back truncated and null. Inception's own API honours `reasoning_effort` and silently ignores OpenRouter's `{"reasoning": {…}}` object, so the switch that was meant to be off was on. With `reasoning_effort` the same model answers in 50 tokens instead of 1022. Each helper now resolves its own endpoint, so the field model can sit on one provider while the answer and map models sit on another.

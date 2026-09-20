@@ -13,6 +13,11 @@ Read README.md before editing. Keep the loop small: page -> indexed elements -> 
 - Keep credentials server-side and .env ignored. Tests must not call paid APIs.
 - Verify actual final outcomes independently. A DONE choice is not proof of success.
 - Keep examples, README claims, raw evidence, and model-call counts consistent.
-- Do not commit or push unless the user requests it.
+- Commit and push a finished round yourself: checks green, evaluation measured and written up. Leave
+  unfinished or unmeasured work in the tree and say so.
+- Each helper resolves its own endpoint (<SETTING>_API_KEY/_BASE_URL, then the shared HELPER_* pair). Send
+  reasoning_effort, not a provider-specific reasoning object: Inception ignores OpenRouter's and fills the
+  token window until the reply comes back empty.
 
-Checks: uv run ruff check ., uv run pytest, node --check jev_ultrafast/static/app.js, uv build.
+Checks: uv run ruff check ., uv run pytest, node --check jev_ultrafast/static/app.js,
+node --check jev_ultrafast/snapshot.js, uv build, uv run python scripts/check_guards.py.
