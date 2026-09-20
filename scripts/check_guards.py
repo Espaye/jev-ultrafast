@@ -153,6 +153,25 @@ def main():
                 raise AssertionError("A key outside the fixed set was sent")
         passed.append("key presses and typed letters reach a page that listens for keys; other keys are refused")
 
+        # A board, a rejected field and a closed day say what they mean in colour alone. The characters
+        # already reached the text; without their state Jev reads a board it cannot score.
+        browser.navigate("data:text/html," + quote(
+            "<title>Only colour</title><style>.tile{display:inline-block;width:40px;height:40px}</style>"
+            "<div class=row><span class='tile correct'>C</span>"
+            "<span class='tile letter-elsewhere'>R</span><span class='tile absent'>N</span></div>"
+            "<p class=error>Postcode not recognised</p>"
+            "<div class=card><span data-state=unavailable>14 March</span></div>"
+            "<p class='wrapper container'>Plain paragraph</p>"
+            "<div class=row-locked-in><span class=tile>U</span></div>"))
+        text = browser.observe(screenshot=False)["text"]
+        for marked in ("C (correct)", "R (elsewhere)", "N (absent)",
+                       "Postcode not recognised (error)", "14 March (unavailable)"):
+            assert marked in text, (marked, text)
+        assert "Plain paragraph" in text and "Plain paragraph (" not in text, text
+        # A tile mid-flip has no colour of its own; its row's "locked" must not stand in for one.
+        assert "U (" not in text, text
+        passed.append("state carried only by colour reaches the text; layout classes do not")
+
         browser.navigate((ROOT / "scripts" / "fixtures" / "2048.html").as_uri())
         page = browser.observe(screenshot=False)
         before = page["text"]

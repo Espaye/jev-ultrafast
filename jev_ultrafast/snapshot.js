@@ -180,6 +180,29 @@
       if (editable) actions.push({...base,kind:'click',value,label:'Open '+base.label});
     }
   }
+  // Some pages carry a thing's meaning only in its colour: a guessed letter marked right or absent, a field
+  // marked invalid, a day marked unavailable. The characters reach the text below but the state does not, so
+  // Jev reads a board it cannot score. Class tokens and data-state are the conventional carriers; keep only
+  // tokens that name a state, so layout and framework classes stay out of the text. A word describing the
+  // container rather than the thing ("locked" on a submitted Wordle row) is left out on purpose: while the
+  // tiles flip it would annotate a tile whose colour has not landed yet, and a wrong state reads as fact
+  // where a bare letter reads as "no feedback yet".
+  const states=new Set(['correct','incorrect','right','wrong','present','absent','elsewhere','partial',
+    'exact','match','selected','active','current','checked','done','complete','completed','pending','error',
+    'invalid','valid','success','warning','failed','missing','required','filled','empty','available',
+    'unavailable','soldout','open','closed','hit','miss','won','lost']);
+  const stateOf = e => {
+    let depth=3;
+    for (let n=e; n && n!==document.body && depth--; n=n.parentElement) {
+      const found=new Set();
+      const carriers=[...(n.classList||[]),n.getAttribute('data-state')||'',n.getAttribute('data-status')||''];
+      for (const token of carriers)
+        for (const part of [token,...token.split(/[\s_-]+/)])
+          if (states.has(part.toLowerCase())) found.add(part.toLowerCase());
+      if (found.size) return [...found].join(' ');
+    }
+    return '';
+  };
   const words=[], walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
   const range=document.createRange(); let node,length=0;
   while ((node=walker.nextNode()) && length<6000) {
@@ -187,7 +210,8 @@
     if (!value || !parent || parent.closest('script,style,noscript,template') || !visible(parent)) continue;
     range.selectNodeContents(node); const r=range.getBoundingClientRect();
     if (r.width>0 && r.height>0 && r.bottom>0 && r.top<innerHeight && r.right>0 && r.left<innerWidth) {
-      words.push(value); length+=value.length;
+      const state=stateOf(parent), marked=state ? value+' ('+state+')' : value;
+      words.push(marked); length+=marked.length;
     }
   }
   // Pictures and videos have no text; name them so "show an image" or "play a video" has visible evidence.
