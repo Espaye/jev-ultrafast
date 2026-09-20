@@ -8,6 +8,7 @@ import time
 
 import httpx
 
+from .console import say
 from .questions import ANSWER, MAP_PLACE, NEXT_ACTION, TARGET, TEXT_VALUE
 
 CLIENT = httpx.Client(http2=True, timeout=25)
@@ -168,7 +169,7 @@ def choose(state, goal, history):
                 targets[operation_answer["choice"]],
             )
     except ValueError:
-        print(f"JEV: invalid reply {json.dumps(result.get('answers'))[:600]}", flush=True)
+        say(f"JEV: invalid reply {json.dumps(result.get('answers'))[:600]}")
         raise
     operation = operation_answer["choice"]
     target = None
@@ -189,7 +190,7 @@ def choose(state, goal, history):
         choice = controls[operation]["id"] if operation in controls else operation
         probabilities[choice] = operation_answer["probabilities"][operation]
     latency_ms = round((time.perf_counter() - started) * 1000)
-    print(f"JEV: {operation} {choice!r} — {latency_ms} ms — {result['model']}", flush=True)
+    say(f"JEV: {operation} {choice!r} — {latency_ms} ms — {result['model']}")
     return {
         "choice": choice,
         "operation": operation,
@@ -308,7 +309,7 @@ def map_place(context, screenshot):
     latency_ms = round((time.perf_counter() - started) * 1000)
     helper = {"model": model, "latency_ms": latency_ms, "usage": result.get("usage", {})}
     if place is None:
-        print(f"MAP helper: nothing to place — {latency_ms} ms — {model}", flush=True)
+        say(f"MAP helper: nothing to place — {latency_ms} ms — {model}")
         return None, helper
     if (
         not isinstance(place, str)
@@ -318,7 +319,7 @@ def map_place(context, screenshot):
         or not (-85 <= lat <= 85 and -180 <= lng <= 180)
     ):
         raise invalid
-    print(f"MAP helper: {place!r} ({lat}, {lng}) — {latency_ms} ms — {model}", flush=True)
+    say(f"MAP helper: {place!r} ({lat}, {lng}) — {latency_ms} ms — {model}")
     return {"place": place.strip(), "lat": lat, "lng": lng}, helper
 
 
@@ -363,7 +364,7 @@ def text_json(operation, system, context, setting="TEXT_MODEL"):
     except (ValueError, TypeError):
         output = None
     if not isinstance(output, dict):
-        print(f"{operation} helper: unusable reply {str(result.get('choices'))[:300]!r}", flush=True)
+        say(f"{operation} helper: unusable reply {str(result.get('choices'))[:300]!r}")
     return output, helper
 
 
@@ -399,7 +400,7 @@ def spoken_answer(context):
     if not question and not stopped:
         value = None  # A finished action request gets no answer, even if the helper wrote one anyway.
     value = value.strip() if value else None
-    print(f"ANSWER helper: {value!r} — {helper['latency_ms']} ms — {helper['model']}", flush=True)
+    say(f"ANSWER helper: {value!r} — {helper['latency_ms']} ms — {helper['model']}")
     return value, helper
 
 
@@ -415,9 +416,9 @@ def field_text(context):
         ):
             raise ValueError()
     except (ValueError, KeyError, TypeError):
-        print(f"TYPE_TEXT helper: invalid value {json.dumps(output)[:300]}", flush=True)
+        say(f"TYPE_TEXT helper: invalid value {json.dumps(output)[:300]}")
         raise ValueError(
             "Text helper returned no valid field value; nothing typed."
         ) from None
-    print(f"TEXT helper: {value!r} — {helper['latency_ms']} ms — {helper['model']}", flush=True)
+    say(f"TEXT helper: {value!r} — {helper['latency_ms']} ms — {helper['model']}")
     return value, helper

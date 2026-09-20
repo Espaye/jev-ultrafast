@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .browser import SEARCH_URL, Browser, StalePage
+from .console import say
 from .model import (
     action_space,
     answer_context,
@@ -225,12 +226,11 @@ class Agent:
                     None,
                 )
 
-                print(
+                say(
                     f"STALE: {exc} | "
                     f"JEV={decision.get('latency_ms', '?')} ms | "
                     f"choice={choice} | "
-                    f"target={action.get('label') if action else choice}",
-                    flush=True,
+                    f"target={action.get('label') if action else choice}"
                 )
 
                 state["decision"] = None
@@ -250,12 +250,11 @@ class Agent:
                 added = list(new_actions - old_actions)[:10]
                 removed = list(old_actions - new_actions)[:10]
 
-                print(
+                say(
                     f"  URL changed: {old_page.get('url') != new_page.get('url')}\n"
                     f"  marker changed: {old_page.get('marker') != new_page.get('marker')}\n"
                     f"  added controls: {added}\n"
-                    f"  removed controls: {removed}",
-                    flush=True,
+                    f"  removed controls: {removed}"
                 )
 
                 # A rejected action on a page that did not change gets the same input, so the model repeats it.
@@ -269,7 +268,7 @@ class Agent:
                     ids = rejected["ids"] if rejected.get("fingerprint") == new_page["fingerprint"] else []
                     state["rejected"] = {"fingerprint": new_page["fingerprint"], "ids": [*ids, choice]}
                 if state["stale_repeats"] >= STALE_REPEATS:
-                    print(f"BLOCKED: {choice} was rejected {STALE_REPEATS} times on an unchanged page", flush=True)
+                    say(f"BLOCKED: {choice} was rejected {STALE_REPEATS} times on an unchanged page")
                     state["status"] = "blocked"
 
                 state["page"] = new_page
@@ -460,10 +459,7 @@ class Agent:
                 for h in state["history"][-CLICK_REPEATS:]
             )
             if hammering:
-                print(
-                    f"BLOCKED: {action['label'][:60]!r} was clicked {CLICK_REPEATS} times in a row",
-                    flush=True,
-                )
+                say(f"BLOCKED: {action['label'][:60]!r} was clicked {CLICK_REPEATS} times in a row")
             state["status"] = (
                 "blocked"
                 if cycling

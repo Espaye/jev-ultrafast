@@ -1,6 +1,8 @@
 """Offline contracts for a dynamic operation/target policy. No paid APIs."""
 
+import io
 import json
+import sys
 import time
 from copy import deepcopy
 from unittest.mock import Mock
@@ -10,6 +12,7 @@ import pytest
 from jev_ultrafast import agent as loop
 from jev_ultrafast import model
 from jev_ultrafast.browser import StalePage, browser_operation, fingerprint
+from jev_ultrafast.console import say
 
 
 def page():
@@ -816,6 +819,7 @@ def test_repeating_one_key_is_not_a_repeated_click(runner, monkeypatch):
     assert set(clicking(runner, monkeypatch, presses, keys=True)) == {"ready"}
 
 
+
 def test_a_client_side_route_change_counts_as_leaving_the_page():
     import jev_ultrafast.browser as browser
 
@@ -899,3 +903,38 @@ def test_a_declined_placement_clicks_nothing_and_hides_the_map_on_that_page(runn
     monkeypatch.setattr(loop, "choose", choose)
     runner.command("predict")
     assert all(a["kind"] != "place" for a in choose.call_args.args[0]["actions"])
+
+
+def cp1252_console(monkeypatch):
+    """A Windows console in the default code page: what every measured suite run printed to."""
+    console = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+    monkeypatch.setattr(sys, "stdout", console)
+    return console
+
+
+def test_a_label_the_console_cannot_show_does_not_end_the_request(runner, monkeypatch):
+    """One request per measured suite run died here: a YouTube title holding an emoji reached a print, which
+    raised UnicodeEncodeError out of `tick` and was recorded as that request's error. What a console can
+    render decides what is shown, never whether the run goes on."""
+    console = cp1252_console(monkeypatch)
+    monkeypatch.delenv("TEXT_MODEL_API_KEY", raising=False)
+    monkeypatch.setattr(loop, "choose", Mock(return_value=decision("e3")))
+    titled = page()
+    titled["actions"][2]["label"] = "We tried it 🤔"
+    titled["fingerprint"] = fingerprint(titled)
+    runner.state["browser"].act.side_effect = StalePage("Target changed or is covered. Observe again.")
+    runner.state["browser"].observe.side_effect = lambda **_: {**titled, "marker": "same"}
+    runner.state.update(page=runner.observe(), status="ready")
+    runner.command("tick")
+    assert runner.state["status"] == "ready"
+    console.flush()
+    assert b"target=We tried it ?" in console.buffer.getvalue()
+
+
+def test_a_console_that_can_show_the_character_still_gets_it(monkeypatch):
+    """The replacement is the console's own limit, not a strip to ASCII: nothing is lost where it fits."""
+    console = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+    monkeypatch.setattr(sys, "stdout", console)
+    say("We tried it 🤔")
+    console.flush()
+    assert console.buffer.getvalue().decode("utf-8").strip() == "We tried it 🤔"

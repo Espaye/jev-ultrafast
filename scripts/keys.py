@@ -22,6 +22,7 @@ import conversations  # noqa: E402
 from conversations import run_request  # noqa: E402
 
 from jev_ultrafast import Agent  # noqa: E402
+from jev_ultrafast.console import say  # noqa: E402
 
 conversations.TICKS = 80  # A game needs more moves than a conversation request.
 GAME = (ROOT / "scripts" / "fixtures" / "2048.html").as_uri()
@@ -90,8 +91,8 @@ def run_conversation(name, start, turns):
                           passed=result["status"] == "done" and value is not None and bool(passes(value)),
                           text_values=[c.get("value") for c in agent.state["text_calls"]])
             results.append(result)
-            print(f"  {'PASS' if result['passed'] else 'FAIL'} {result['status']:7} {result['seconds']:6.2f}s "
-                  f"{len(result['actions']):3} actions  {request!r} -> {value!r}", flush=True)
+            say(f"  {'PASS' if result['passed'] else 'FAIL'} {result['status']:7} {result['seconds']:6.2f}s "
+                f"{len(result['actions']):3} actions  {request!r} -> {value!r}")
     return {"name": name, "start": start, "requests": results}
 
 

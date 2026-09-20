@@ -28,6 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from jev_ultrafast import Agent  # noqa: E402
 from jev_ultrafast.browser import SEARCH_URL  # noqa: E402
+from jev_ultrafast.console import say  # noqa: E402
 
 # The same pattern app.js uses to spot a website named in a request.
 SITE = re.compile(r"(?:https?://)?(?:[a-z0-9-]+\.)+[a-z]{2,24}(?![a-z0-9-])(?:/[^\s\"'<>]*)?", re.I)
@@ -192,8 +193,8 @@ def run_conversation(name, turns, folder, record):
                 result.update(request=request, check=meaning, url=page["url"],
                               passed=bool(check(page, first_page)))
                 results.append(result)
-                print(f"  {'PASS' if result['passed'] else 'FAIL'} {result['status']:7} "
-                      f"{result['seconds']:6.2f}s  {request!r} -> {page['url'][:80]}", flush=True)
+                say(f"  {'PASS' if result['passed'] else 'FAIL'} {result['status']:7} "
+                    f"{result['seconds']:6.2f}s  {request!r} -> {page['url'][:80]}")
         finally:
             if screencast:
                 screencast.close()

@@ -3,6 +3,7 @@
 import argparse
 
 from jev_ultrafast import Agent
+from jev_ultrafast.console import say
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--url", required=True)
@@ -11,5 +12,5 @@ args = parser.parse_args()
 
 with Agent(args.url, args.goal) as agent:
     for state in agent.run():
-        print(f"{state['elapsed_ms']:>5} ms  {len(state['history'])} actions  {state['status']}")
-    print(state["page"]["url"])
+        say(f"{state['elapsed_ms']:>5} ms  {len(state['history'])} actions  {state['status']}")
+    say(state["page"]["url"])

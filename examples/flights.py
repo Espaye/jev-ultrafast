@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from jev_ultrafast import Agent
+from jev_ultrafast.console import say
 
 URL = "https://www.google.com/travel/flights?hl=en"
 GOALS = (
@@ -49,7 +50,7 @@ def main():
     try:
         for state in agent.run():
             last = state["history"][-1] if state["history"] else {}
-            print(state["elapsed_ms"], state["status"], last.get("action", ""), flush=True)
+            say(f"{state['elapsed_ms']} {state['status']} {last.get('action', '')}")
     finally:
         state = agent.snapshot()
         state["verification"] = verify(state["page"])

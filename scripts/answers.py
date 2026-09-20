@@ -28,6 +28,7 @@ from conversations import run_request, site_in  # noqa: E402
 
 from jev_ultrafast import Agent  # noqa: E402
 from jev_ultrafast.browser import SEARCH_URL  # noqa: E402
+from jev_ultrafast.console import say  # noqa: E402
 
 TOLERANCE_C = 3  # Weather sites and Open-Meteo use different stations and update times.
 
@@ -152,8 +153,8 @@ def run_conversation(name, turns, reference):
                 passed=result["status"] == "done" and bool(check(page, answer, reference)),
             )
             results.append(result)
-            print(f"  {'PASS' if result['passed'] else 'FAIL'} {result['status']:7} {result['seconds']:6.2f}s  "
-                  f"{request!r}\n      -> {page['url'][:90]}\n      says: {answer!r}", flush=True)
+            say(f"  {'PASS' if result['passed'] else 'FAIL'} {result['status']:7} {result['seconds']:6.2f}s  "
+                f"{request!r}\n      -> {page['url'][:90]}\n      says: {answer!r}")
     return {"name": name, "start": start, "requests": results}
 
 

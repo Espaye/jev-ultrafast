@@ -120,6 +120,7 @@ uv run --env-file .env python examples/run.py \
 | [browser.py](jev_ultrafast/browser.py) | Browser connection, navigation waits, new tabs, execution |
 | [model.py](jev_ultrafast/model.py) | Dynamic operation/target heads and text generation |
 | [questions.py](jev_ultrafast/questions.py) | Model instructions |
+| [console.py](jev_ultrafast/console.py) | Diagnostics that cannot end a run |
 | [demo.py](jev_ultrafast/demo.py), [app.js](jev_ultrafast/static/app.js) | Local inspector with voice |
 
 ## Limits
