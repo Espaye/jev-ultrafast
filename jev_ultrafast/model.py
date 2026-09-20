@@ -207,6 +207,15 @@ def choose(state, goal, history):
     }
 
 
+def reasoning_param(base, setting, default="low"):
+    """reasoning_effort is the OpenAI-standard spelling and is honoured by OpenRouter and by Inception's own
+    API. OpenRouter's {"reasoning": {...}} object is NOT: Inception ignores it silently, leaving reasoning on
+    until the 1024-token window fills with it and the reply comes back empty. DeepSeek has its own switch."""
+    if "api.deepseek.com/" in base:
+        return {"thinking": {"type": "disabled"}}
+    return {"reasoning_effort": os.environ.get(setting + "_REASONING") or default}
+
+
 def field_context(goal, action, page, history):
     return {
         "goal": goal,
@@ -218,13 +227,27 @@ def field_context(goal, action, page, history):
     }
 
 
-def helper_endpoint(operation):
-    key = os.environ.get("TEXT_MODEL_API_KEY")
+def helper_endpoint(setting):
+    """Each helper may sit on its own provider. <SETTING>_API_KEY and <SETTING>_BASE_URL win where they are
+    set; HELPER_API_KEY and HELPER_BASE_URL are the shared fallback (TEXT_MODEL_* is the older name for it,
+    still honoured), so a one-provider setup needs no extra variables. The shared pair has a name of its own
+    because TEXT_MODEL_* belongs to TYPE_TEXT: a free Mercury key there must not drag the gemini answer and
+    map helpers onto Inception with it. An empty value counts as unset, so a blank slot falls back."""
+    names = dict.fromkeys([setting + "_API_KEY", "HELPER_API_KEY", "TEXT_MODEL_API_KEY"])
+    key = next((os.environ[n] for n in names if os.environ.get(n)), None)
     if not key:
         raise ValueError(
-            f"{operation} needs TEXT_MODEL_API_KEY; no value is hardcoded or guessed by the executor."
+            f"{setting} needs {' or '.join(names)}; no value is hardcoded or guessed by the executor."
         )
-    return os.environ.get("TEXT_MODEL_BASE_URL", "https://api.deepseek.com/v1").rstrip("/"), key
+    base = next(
+        (
+            os.environ[n]
+            for n in (setting + "_BASE_URL", "HELPER_BASE_URL", "TEXT_MODEL_BASE_URL")
+            if os.environ.get(n)
+        ),
+        "https://api.deepseek.com/v1",
+    )
+    return base.rstrip("/"), key
 
 
 def map_context(goal, page, history):
@@ -239,7 +262,7 @@ def map_context(goal, page, history):
 
 def map_place(context, screenshot):
     """A vision model reads the page (a photo, a question) and names a place; code owns the pixel."""
-    base, key = helper_endpoint("PLACE_ON_MAP")
+    base, key = helper_endpoint("MAP_MODEL")
     model = os.environ.get("MAP_MODEL", "google/gemini-3.8-flash")
     started = time.perf_counter()
     result = post_json(
@@ -249,7 +272,7 @@ def map_place(context, screenshot):
             "model": model,
             "max_tokens": 4096,
             "response_format": {"type": "json_object"},
-            "reasoning": {"effort": os.environ.get("MAP_MODEL_REASONING", "low")},
+            **reasoning_param(base, "MAP_MODEL"),
             "messages": [
                 {"role": "system", "content": MAP_PLACE},
                 {
@@ -290,17 +313,11 @@ def map_place(context, screenshot):
 def text_json(operation, system, context, setting="TEXT_MODEL"):
     """One JSON reply from the OpenAI-compatible helper. setting names the model's variable (TEXT_MODEL, or
     ANSWER_MODEL for spoken answers, which falls back to the text model when unset)."""
-    base, key = helper_endpoint(operation)
     if not os.environ.get(setting):
         setting = "TEXT_MODEL"
+    base, key = helper_endpoint(setting)
     model = os.environ.get(setting, "deepseek-chat")
-    reasoning = (
-        {"thinking": {"type": "disabled"}}
-        if "api.deepseek.com/" in base
-        else {"reasoning": {"effort": "low"}}
-    )
-    if os.environ.get(setting + "_REASONING") == "none":
-        reasoning = {"reasoning": {"enabled": False}}
+    reasoning = reasoning_param(base, setting)
     started = time.perf_counter()
     # A reply without content changes nothing in the browser, so asking once more is safe.
     for _attempt in range(2):

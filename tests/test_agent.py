@@ -157,6 +157,37 @@ def test_missing_text_credential_stops_before_guessing(monkeypatch):
         model.field_text({"goal": 'Enter "Zurich"'})
 
 
+def test_each_helper_can_sit_on_its_own_provider(monkeypatch):
+    """A free Mercury key for TYPE_TEXT must not drag the answer and map helpers onto that provider."""
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "shared")
+    monkeypatch.setenv("TEXT_MODEL_BASE_URL", "https://openrouter.ai/api/v1/")
+    monkeypatch.delenv("ANSWER_MODEL_BASE_URL", raising=False)
+    monkeypatch.delenv("ANSWER_MODEL_API_KEY", raising=False)
+    assert model.helper_endpoint("ANSWER_MODEL") == ("https://openrouter.ai/api/v1", "shared")
+
+    monkeypatch.setenv("TEXT_MODEL_BASE_URL_UNUSED", "ignored")
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "shared")
+    monkeypatch.setenv("MAP_MODEL_API_KEY", "own")
+    monkeypatch.setenv("MAP_MODEL_BASE_URL", "https://api.inceptionlabs.ai/v1")
+    assert model.helper_endpoint("MAP_MODEL") == ("https://api.inceptionlabs.ai/v1", "own")
+    # The helper without its own pair keeps the shared one.
+    assert model.helper_endpoint("ANSWER_MODEL") == ("https://openrouter.ai/api/v1", "shared")
+
+    # A blank slot in .env counts as unset, so pasting nothing leaves the shared provider in charge.
+    monkeypatch.setenv("HELPER_API_KEY", "shared")
+    monkeypatch.setenv("HELPER_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "")
+    monkeypatch.setenv("TEXT_MODEL_BASE_URL", "")
+    assert model.helper_endpoint("TEXT_MODEL") == ("https://openrouter.ai/api/v1", "shared")
+
+
+def test_a_helpers_own_credential_is_required_by_name(monkeypatch):
+    monkeypatch.delenv("TEXT_MODEL_API_KEY", raising=False)
+    monkeypatch.delenv("MAP_MODEL_API_KEY", raising=False)
+    with pytest.raises(ValueError, match="MAP_MODEL_API_KEY or HELPER_API_KEY or TEXT_MODEL_API_KEY"):
+        model.helper_endpoint("MAP_MODEL")
+
+
 @pytest.fixture
 def runner():
     a = loop.Agent.__new__(loop.Agent)
@@ -344,6 +375,7 @@ def test_answer_helper_rejects_invalid_answers(monkeypatch, content):
 
 def test_answers_use_their_own_model_and_fall_back_to_the_text_model(monkeypatch):
     monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    monkeypatch.setenv("TEXT_MODEL_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setenv("TEXT_MODEL", "small")
     post = Mock(return_value={"choices": [{"message": {"content": '{"question":false,"answer":null}'}}]})
     monkeypatch.setattr(model, "post_json", post)
@@ -354,7 +386,20 @@ def test_answers_use_their_own_model_and_fall_back_to_the_text_model(monkeypatch
     model.spoken_answer({"request": "open it"})
     bodies = [call.args[2] for call in post.call_args_list]
     assert [b["model"] for b in bodies] == ["small", "reader"]
-    assert bodies[1]["reasoning"] == {"enabled": False}
+    # reasoning_effort, not OpenRouter's reasoning object: Inception ignores that one.
+    assert [b["reasoning_effort"] for b in bodies] == ["low", "none"]
+
+
+def test_deepseek_keeps_its_own_reasoning_switch(monkeypatch):
+    """reasoning_effort is the shared spelling; DeepSeek is the one provider that needs its own."""
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    monkeypatch.setenv("TEXT_MODEL_BASE_URL", "https://api.deepseek.com/v1")
+    monkeypatch.setenv("TEXT_MODEL", "deepseek-chat")
+    post = Mock(return_value={"choices": [{"message": {"content": '{"text":"Zurich"}'}}]})
+    monkeypatch.setattr(model, "post_json", post)
+    model.field_text({"goal": 'Enter "Zurich"'})
+    body = post.call_args.args[2]
+    assert body["thinking"] == {"type": "disabled"} and "reasoning_effort" not in body
 
 
 def test_an_empty_helper_reply_is_asked_once_more(monkeypatch):
