@@ -55,11 +55,16 @@ GO_BACK = {
 EARLIER_REQUESTS = 5
 CYCLE_REPEATS = 3
 STALE_REPEATS = 2
-# One control clicked over and over, on a page that changes every time, escapes CYCLE_REPEATS: from_view holds
-# the page text, so a re-rendering list (a recommendation filter) looks like a new situation at every click.
-# Five is measured, not guessed: across every run recorded under artifacts/, the longest run of identical
-# consecutive clicks in a request that PASSED is two, and only two requests ever reached five, both failures.
-CLICK_REPEATS = 5
+# One action repeated over and over, on a page that changes every time, escapes CYCLE_REPEATS: from_view holds
+# the page text, so a re-rendering list (a recommendation filter) and a feed that scrolls to the next video
+# both look like a new situation at every step.
+# Five is measured, not guessed. Across the 635 requests recorded under artifacts/, the longest run of
+# identical consecutive actions in a request that PASSED is two, for clicks and for scrolls alike; failures
+# reach five and eight clicks, and nine, fourteen, sixteen and twenty-six scrolls.
+ACTION_REPEATS = 5
+# Only where repeating one action is never progress. A game presses one arrow all game, a puzzle types letter
+# after letter, and a map plays round after round through the same Next button, so those kinds are left alone.
+GUARDED_KINDS = {"click", "scroll"}
 
 
 def view(page, action):
@@ -451,15 +456,18 @@ class Agent:
             cycling = action["kind"] != "wait" and sum(
                 h.get("from_view") == view(page, action) for h in state["history"]
             ) >= CYCLE_REPEATS
-            # Clicking one target this many times in a row is not progress on any page. Only clicks: a game
-            # legitimately presses one arrow all game, a puzzle types letter after letter, and a map plays
-            # round after round through the same Next button, so those kinds are left alone.
-            hammering = len(state["history"]) >= CLICK_REPEATS and all(
-                h["kind"] == "click" and h["action"] == action["label"]
-                for h in state["history"][-CLICK_REPEATS:]
+            # Choosing one target this many times in a row is not progress on any page: a filter that
+            # re-renders its own list, a feed that scrolls to the next video for ever.
+            hammering = (
+                action["kind"] in GUARDED_KINDS
+                and len(state["history"]) >= ACTION_REPEATS
+                and all(
+                    h["kind"] == action["kind"] and h["action"] == action["label"]
+                    for h in state["history"][-ACTION_REPEATS:]
+                )
             )
             if hammering:
-                say(f"BLOCKED: {action['label'][:60]!r} was clicked {CLICK_REPEATS} times in a row")
+                say(f"BLOCKED: {action['label'][:60]!r} was chosen {ACTION_REPEATS} times in a row")
             state["status"] = (
                 "blocked"
                 if cycling

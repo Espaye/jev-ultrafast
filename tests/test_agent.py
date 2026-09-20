@@ -773,22 +773,27 @@ def test_cycling_between_pages_stops_even_when_nodes_are_rebuilt(runner):
         assert runner.state["status"] == ("blocked" if step == 4 else "ready")
 
 
-def rerendered(i, keys=False):
-    """The same controls, on a page whose content is new every time: what a filter that re-renders a list does."""
+def rerendered(i, keys=False, scroll=False):
+    """The same controls, on a page whose content is new every time: what a filter that re-renders a list does,
+    and what a feed of Shorts does to every scroll."""
     p = page()
     p["text"] = f"Search results {i}"
     if keys:
         p["actions"] = [*p["actions"],
                         {"id": "key_arrowdown", "kind": "key", "key": "ArrowDown", "label": "Arrow down"}]
+    if scroll:
+        p["actions"] = [*p["actions"],
+                        {"id": "scroll_down", "kind": "scroll", "label": "Scroll down", "delta": 560},
+                        {"id": "scroll_up", "kind": "scroll", "label": "Scroll up", "delta": -560}]
     p["fingerprint"] = fingerprint(p)
     return p
 
 
-def clicking(runner, monkeypatch, choices, keys=False):
+def choosing(runner, monkeypatch, choices, keys=False, scroll=False):
     for name in ("ANSWER_MODEL_API_KEY", "HELPER_API_KEY", "TEXT_MODEL_API_KEY"):
         monkeypatch.delenv(name, raising=False)
-    runner.state["page"] = rerendered(0, keys)
-    runner.state["browser"].observe.side_effect = [rerendered(i, keys) for i in range(1, len(choices) + 1)]
+    runner.state["page"] = rerendered(0, keys, scroll)
+    runner.state["browser"].observe.side_effect = [rerendered(i, keys, scroll) for i in range(1, len(choices) + 1)]
     for selected in choices:
         runner.state["decision"] = decision(selected)
         runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
@@ -798,26 +803,50 @@ def clicking(runner, monkeypatch, choices, keys=False):
 def test_clicking_one_control_over_and_over_stops_even_when_the_page_changes(runner, monkeypatch):
     """from_view holds the page text, so a control that re-renders the page looks like a new situation at every
     click and CYCLE_REPEATS never fires. A recorded run clicked one such filter eight times."""
-    statuses = list(clicking(runner, monkeypatch, ["e3"] * loop.CLICK_REPEATS))
-    assert statuses == ["ready"] * (loop.CLICK_REPEATS - 1) + ["blocked"]
+    statuses = list(choosing(runner, monkeypatch, ["e3"] * loop.ACTION_REPEATS))
+    assert statuses == ["ready"] * (loop.ACTION_REPEATS - 1) + ["blocked"]
 
 
 def test_one_click_short_of_the_limit_keeps_going(runner, monkeypatch):
-    assert list(clicking(runner, monkeypatch, ["e3"] * (loop.CLICK_REPEATS - 1))) == \
-        ["ready"] * (loop.CLICK_REPEATS - 1)
+    assert list(choosing(runner, monkeypatch, ["e3"] * (loop.ACTION_REPEATS - 1))) == \
+        ["ready"] * (loop.ACTION_REPEATS - 1)
 
 
 def test_another_click_in_between_resets_the_count(runner, monkeypatch):
     """Only an unbroken run counts: alternating between two controls is the cycle guard's business, not this."""
-    choices = ["e3"] * (loop.CLICK_REPEATS - 1) + ["e2"] + ["e3"] * (loop.CLICK_REPEATS - 1)
-    assert set(clicking(runner, monkeypatch, choices)) == {"ready"}
+    choices = ["e3"] * (loop.ACTION_REPEATS - 1) + ["e2"] + ["e3"] * (loop.ACTION_REPEATS - 1)
+    assert set(choosing(runner, monkeypatch, choices)) == {"ready"}
 
 
 def test_repeating_one_key_is_not_a_repeated_click(runner, monkeypatch):
     """A game presses one arrow all game and a puzzle types letter after letter; only clicks are counted."""
-    presses = ["key_arrowdown"] * (loop.CLICK_REPEATS + 2)
-    assert set(clicking(runner, monkeypatch, presses, keys=True)) == {"ready"}
+    presses = ["key_arrowdown"] * (loop.ACTION_REPEATS + 2)
+    assert set(choosing(runner, monkeypatch, presses, keys=True)) == {"ready"}
 
+
+def test_scrolling_one_way_over_and_over_stops_even_when_the_page_changes(runner, monkeypatch):
+    """A feed of Shorts answers every scroll with another video, so from_view holds new text each time and
+    CYCLE_REPEATS never fires either. Two recorded runs spent all forty model calls scrolling one."""
+    statuses = list(choosing(runner, monkeypatch, ["scroll_down"] * loop.ACTION_REPEATS, scroll=True))
+    assert statuses == ["ready"] * (loop.ACTION_REPEATS - 1) + ["blocked"]
+
+
+def test_one_scroll_short_of_the_limit_keeps_going(runner, monkeypatch):
+    scrolls = ["scroll_down"] * (loop.ACTION_REPEATS - 1)
+    assert list(choosing(runner, monkeypatch, scrolls, scroll=True)) == ["ready"] * (loop.ACTION_REPEATS - 1)
+
+
+def test_scrolling_back_the_other_way_resets_the_count(runner, monkeypatch):
+    """Up is not down: a page read forwards and backwards is the cycle guard's business, not this one."""
+    run = ["scroll_down"] * (loop.ACTION_REPEATS - 1)
+    assert set(choosing(runner, monkeypatch, [*run, "scroll_up", *run], scroll=True)) == {"ready"}
+
+
+def test_a_click_and_a_scroll_are_counted_apart(runner, monkeypatch):
+    """Both kinds count, but only an unbroken run of one action does: scrolling to a control and clicking it
+    is how a long page is used."""
+    mixed = ["e3", "scroll_down"] * loop.ACTION_REPEATS
+    assert set(choosing(runner, monkeypatch, mixed, scroll=True)) == {"ready"}
 
 
 def test_a_client_side_route_change_counts_as_leaving_the_page():
