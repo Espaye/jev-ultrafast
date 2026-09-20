@@ -138,19 +138,24 @@ function render() {
     done: "Jev reports complete · inspect the page",
     blocked: "Stopped · no supported next action",
   };
-  $("status").textContent =
-    state.status === "done" && state.answer ? `Jev answers: ${state.answer}` : labels[state.status] || state.status;
+  $("status").textContent = state.answer
+    ? `Jev ${state.status === "done" ? "answers" : "reports"}: ${state.answer}`
+    : labels[state.status] || state.status;
   if (clock !== null && ["done", "blocked"].includes(state.status)) {
     stopClock(true);
     recordSteering();
     if (voiceRun) {
       const n = Math.round((endedAt - startedAt) / 1000),
         seconds = `${n} second${n === 1 ? "" : "s"}`;
+      // A run that stopped early reads its own page too: a played-out game says its score, not "I got stuck".
+      const done = state.status === "done";
       answer(
-        state.status !== "done"
-          ? `I got stuck after ${seconds}.`
-          : state.answer ||
-              (state.answer_error ? `Done, but I could not read out the answer. ${state.answer_error}` : `Done in ${seconds}.`),
+        state.answer ||
+          (state.answer_error
+            ? `${done ? "Done" : `I stopped after ${seconds}`}, but I could not read out what happened. ${state.answer_error}`
+            : done
+              ? `Done in ${seconds}.`
+              : `I got stuck after ${seconds}.`),
       );
     }
   }

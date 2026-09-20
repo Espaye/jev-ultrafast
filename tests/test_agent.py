@@ -195,10 +195,17 @@ def runner():
     a.pending_text = None
     p = page()
     a.state = {
-        "browser": Mock(fresh=Mock(return_value=True), observe=Mock(return_value=p)),
+        "browser": Mock(
+            fresh=Mock(return_value=True),
+            observe=Mock(return_value=p),
+            # Every stop reads the page out loud now, so the document is text, as the browser always returns.
+            document_text=Mock(return_value=""),
+        ),
         "page": p,
         "decision": decision(),
         "goal": "Find a book",
+        "plan": ["Find a book"],
+        "plan_index": 0,
         "history": [],
         "decisions": [],
         "status": "predicted",
@@ -373,6 +380,32 @@ def test_answer_helper_rejects_invalid_answers(monkeypatch, content):
         model.spoken_answer({"request": "weather in Utrecht"})
 
 
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    # An action request stays silent only when it finished; a run that stopped says how far it got either way.
+    [('{"question":false,"answer":"I finished all five rounds with 18,432 points."}',
+      "I finished all five rounds with 18,432 points."),
+     ('{"question":true,"answer":"I got as far as typing 5*5 into the search box."}',
+      "I got as far as typing 5*5 into the search box.")],
+)
+def test_a_stopped_run_speaks_even_for_an_action_request(monkeypatch, content, expected):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    post = Mock(return_value={"choices": [{"message": {"content": content}}]})
+    monkeypatch.setattr(model, "post_json", post)
+    context = model.answer_context("play a round of the game", page(), [], outcome="stopped")
+    assert model.spoken_answer(context)[0] == expected
+    assert json.loads(post.call_args.args[2]["messages"][1]["content"])["outcome"] == "stopped"
+
+
+def test_a_stopped_run_that_says_nothing_is_a_failed_answer(monkeypatch):
+    """Silence is what this change exists to remove, so an empty reply is an error, not an action request."""
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    monkeypatch.setattr(model, "post_json", Mock(
+        return_value={"choices": [{"message": {"content": '{"question":false,"answer":null}'}}]}))
+    with pytest.raises(ValueError, match="no valid answer"):
+        model.spoken_answer(model.answer_context("play a round", page(), [], outcome="stopped"))
+
+
 def test_answers_use_their_own_model_and_fall_back_to_the_text_model(monkeypatch):
     monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
     monkeypatch.setenv("TEXT_MODEL_BASE_URL", "https://openrouter.ai/api/v1")
@@ -446,6 +479,83 @@ def test_a_failed_answer_keeps_the_task_done_and_reports_the_failure(runner, mon
     state = done(runner)
     assert state["status"] == "done" and not state.get("answer")
     assert "402" in state["answer_error"]
+
+
+def stopped(runner, request, page_text):
+    runner.state["browser"].document_text.return_value = page_text
+    runner.state.update(plan=[request], plan_index=0, decision={**decision("BLOCKED"), "operation": "BLOCKED"})
+    return runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+
+
+def test_a_stopped_run_reads_what_it_reached_off_the_page(runner, monkeypatch):
+    """A finished game stops for want of a next move. "I got stuck" hides the score the page is showing."""
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    helper = Mock(return_value=("I finished all five rounds with 18,432 points.", {"model": "t", "latency_ms": 5}))
+    monkeypatch.setattr(loop, "spoken_answer", helper)
+    state = stopped(runner, "play a round of the game", "Game over — 18,432 points")
+    assert state["status"] == "blocked"
+    assert state["answer"] == "I finished all five rounds with 18,432 points."
+    context = helper.call_args.args[0]
+    assert context["outcome"] == "stopped" and context["page"]["document_start"] == "Game over — 18,432 points"
+    assert state["text_calls"][-1]["value"] == "I finished all five rounds with 18,432 points."
+
+
+def test_a_stopped_run_without_a_text_key_stays_silent(runner, monkeypatch):
+    monkeypatch.delenv("TEXT_MODEL_API_KEY", raising=False)
+    helper = Mock()
+    monkeypatch.setattr(loop, "spoken_answer", helper)
+    assert stopped(runner, "play a round", "Game over")["status"] == "blocked"
+    helper.assert_not_called()
+
+
+def test_a_run_stopped_by_a_refused_target_speaks_too(runner, monkeypatch):
+    """The loop's own guards stop a run as often as the model does; each one ends on a readable page."""
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    helper = Mock(return_value=("I typed 5*5 but could not submit it.", {"model": "t", "latency_ms": 5}))
+    monkeypatch.setattr(loop, "spoken_answer", helper)
+    monkeypatch.setattr(loop, "choose", Mock(return_value=decision("e3")))
+    runner.state["browser"].act.side_effect = StalePage("Target changed or is covered. Observe again.")
+    runner.state["browser"].observe.side_effect = lambda **_: {**page(), "marker": "same"}
+    runner.state.update(page=runner.observe(), status="ready")
+    for _ in range(loop.STALE_REPEATS):
+        runner.command("tick")
+    assert runner.state["status"] == "blocked"
+    assert runner.state["answer"] == "I typed 5*5 but could not submit it."
+    assert helper.call_args.args[0]["outcome"] == "stopped"
+
+
+def test_a_refused_target_is_withheld_so_another_way_in_can_be_chosen(runner, monkeypatch):
+    """A refusal executes nothing, so no history entry records it and an unchanged page returns the same
+    choice forever. Withholding the target is the only way the model learns to press Enter instead."""
+    monkeypatch.delenv("TEXT_MODEL_API_KEY", raising=False)
+    chooser = Mock(return_value=decision("e3"))
+    monkeypatch.setattr(loop, "choose", chooser)
+    runner.state["browser"].act.side_effect = StalePage("Target changed or is covered. Observe again.")
+    runner.state["browser"].observe.side_effect = lambda **_: {**page(), "marker": "same"}
+    runner.state.update(page=runner.observe(), status="ready")
+    runner.command("tick")  # The first choice was made before the executor refused it.
+    assert [a["id"] for a in chooser.call_args.args[0]["actions"]].count("e3") == 1
+    assert runner.state["rejected"]["ids"] == ["e3"]
+    runner.command("tick")
+    offered = [a["id"] for a in chooser.call_args.args[0]["actions"]]
+    assert "e3" not in offered and "key_enter" in offered and "e1" in offered
+
+
+def test_a_refused_target_returns_once_the_page_accepts_an_action(runner, monkeypatch):
+    monkeypatch.delenv("TEXT_MODEL_API_KEY", raising=False)
+    chooser = Mock(return_value=decision("e3"))
+    monkeypatch.setattr(loop, "choose", chooser)
+    runner.state["browser"].act.side_effect = StalePage("Target changed or is covered. Observe again.")
+    runner.state["browser"].observe.side_effect = lambda **_: {**page(), "marker": "same"}
+    runner.state.update(page=runner.observe(), status="ready")
+    runner.command("tick")
+    assert runner.state["rejected"]["ids"] == ["e3"]
+    runner.state["browser"].act.side_effect = None
+    runner.command("tick")  # e3 is still withheld here; this tick is what clears it.
+    assert runner.state["rejected"] is None
+    runner.command("tick")
+    offered = [a["id"] for a in chooser.call_args.args[0]["actions"]]
+    assert "e3" in offered
 
 
 def test_a_follow_up_sees_the_earlier_answer(runner):

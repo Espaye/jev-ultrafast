@@ -124,6 +124,35 @@ class Agent:
             page["actions"].append(GO_BACK)
         return page
 
+    def report(self):
+        """What the run says out loud, for a finished request and for one that ran out of moves alike.
+        A stopped run is not silence: the page it stopped on still holds the score, the result, or how far it
+        got, and this helper is the only thing that reads it. The run has ended either way; a failed answer is
+        reported as such, never replaced by a guess."""
+        state = self.state
+        if os.environ.get("TEXT_MODEL_API_KEY"):
+            try:
+                document = state["browser"].document_text()
+            except (StalePage, RuntimeError):
+                document = ""  # The visible text still holds what the run ended on.
+            try:
+                answer, helper = spoken_answer(
+                    answer_context(
+                        state["plan"][-1],
+                        state["page"],
+                        state["history"],
+                        document,
+                        outcome="finished" if state["status"] == "done" else "stopped",
+                    )
+                )
+            except (ValueError, RuntimeError) as exc:
+                state["answer_error"] = str(exc)
+            else:
+                state["answer"] = answer
+                state["text_calls"].append({**helper, "field": "spoken answer", "value": answer})
+        state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
+        return self.snapshot()
+
     def new_task(self, goal, url=None):
         """Continue the conversation in the same tab: the next request starts where the last one ended."""
         goal = goal.strip()
@@ -151,6 +180,7 @@ class Agent:
             answer=None,
             answer_error=None,
             inert_keys=None,
+            rejected=None,
             decisions=[],
             text_calls=[],
             elapsed_ms=0,
@@ -223,6 +253,13 @@ class Agent:
                 # A rejected action on a page that did not change gets the same input, so the model repeats it.
                 stuck = acting and old_page.get("marker") == new_page.get("marker")
                 state["stale_repeats"] = state.get("stale_repeats", 0) + 1 if stuck else 0
+                if stuck and choice:
+                    # A rejection never reaches the model: nothing executed, so no history entry records it, and
+                    # an unchanged page hands it the same input and gets the same choice back. Withholding the
+                    # refused target is how it finds another way in -- Enter on the field it just filled.
+                    rejected = state.get("rejected") or {}
+                    ids = rejected["ids"] if rejected.get("fingerprint") == new_page["fingerprint"] else []
+                    state["rejected"] = {"fingerprint": new_page["fingerprint"], "ids": [*ids, choice]}
                 if state["stale_repeats"] >= STALE_REPEATS:
                     print(f"BLOCKED: {choice} was rejected {STALE_REPEATS} times on an unchanged page", flush=True)
                     state["status"] = "blocked"
@@ -231,7 +268,7 @@ class Agent:
                 state["elapsed_ms"] = round(
                     (time.perf_counter() - state["started_at"]) * 1000
                 )
-                return self.snapshot()
+                return self.report() if state["status"] == "blocked" else self.snapshot()
         elif name == "predict":
             if not state["browser"]:
                 raise ValueError("Start a demo first")
@@ -254,6 +291,10 @@ class Agent:
                 page = {**page, "actions": [
                     a for a in page["actions"] if not (a["kind"] == "key" and a["key"] in inert["keys"])
                 ]}
+            rejected = state.get("rejected") or {}
+            if rejected.get("fingerprint") == page["fingerprint"]:
+                # The executor refused these targets on this exact page (covered or gone); it would refuse again.
+                page = {**page, "actions": [a for a in page["actions"] if a["id"] not in rejected["ids"]]}
             last = state["history"][-1] if state["history"] else None
             if last and last["kind"] == "place" and last["page_changed"] is not False:
                 # Like a filled field's value: the map holds the point placed by the last action, until another
@@ -287,28 +328,11 @@ class Agent:
                     raise StalePage("Page changed since the decision. Choose again.")
                 state["status"] = "done" if selected == "DONE" else "blocked"
                 state["plan_index"] = len(state["plan"]) - 1 + int(selected == "DONE")
-                if selected == "DONE" and os.environ.get("TEXT_MODEL_API_KEY"):
-                    # The task is done either way; a failed answer is reported as such, never replaced by a guess.
-                    try:
-                        document = state["browser"].document_text()
-                    except (StalePage, RuntimeError):
-                        document = ""  # The visible text still holds what DONE was chosen on.
-                    try:
-                        answer, helper = spoken_answer(
-                            answer_context(state["plan"][-1], page, state["history"], document)
-                        )
-                    except (ValueError, RuntimeError) as exc:
-                        state["answer_error"] = str(exc)
-                    else:
-                        state["answer"] = answer
-                        state["text_calls"].append({**helper, "field": "spoken answer", "value": answer})
-                state["elapsed_ms"] = round(
-                    (time.perf_counter() - state["started_at"]) * 1000
-                )
-                return self.snapshot()
+                return self.report()
             action = next(a for a in page["actions"] if a["id"] == selected)
             if len(state["history"]) >= MAX_STEPS:
                 state["status"] = "blocked"
+                self.report()
                 raise ValueError(f"Stopped at the {MAX_STEPS}-action demo budget")
             text, helper, place = None, None, None
             if action["kind"] == "place":
@@ -345,7 +369,7 @@ class Agent:
                     repeated = state["history"][-3:]
                     stuck = len(repeated) == 3 and all(h["page_changed"] is False for h in repeated)
                     state["status"] = "blocked" if stuck else "ready"
-                    return self.snapshot()
+                    return self.report() if stuck else self.snapshot()
                 text = f"{place['place']} ({place['lat']:.2f}, {place['lng']:.2f})"
             elif action["kind"] in {"fill", "keys"}:
                 if not state["browser"].fresh(page):
@@ -368,6 +392,7 @@ class Agent:
                 state["browser"].act(action, page, text=text)
             self.pending_text = None
             state["stale_repeats"] = 0
+            state["rejected"] = None
             state["elapsed_ms"] = round(
                 (time.perf_counter() - state["started_at"]) * 1000
             )
@@ -428,6 +453,8 @@ class Agent:
                 )
                 else "ready"
             )
+            if state["status"] == "blocked":
+                return self.report()
         else:
             raise ValueError("Unknown command")
         return self.snapshot()

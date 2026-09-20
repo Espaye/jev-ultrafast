@@ -355,9 +355,11 @@ def text_json(operation, system, context, setting="TEXT_MODEL"):
     return output, helper
 
 
-def answer_context(goal, page, history, document=""):
+def answer_context(goal, page, history, document="", outcome="finished"):
     return {
         "request": goal,
+        # "finished" or "stopped". A run that ran out of moves still ends on the page holding its result.
+        "outcome": outcome,
         # "The next train" or "open now" depends on the time; timetables also list trips that already left.
         "now": datetime.datetime.now().astimezone().strftime("%A %Y-%m-%d %H:%M %Z"),
         "page": {"url": page["url"], "title": page["title"], "visible_text": page["text"][:6000],
@@ -369,18 +371,21 @@ def answer_context(goal, page, history, document=""):
 
 
 def spoken_answer(context):
-    """The text helper answers a question from the finished page; None when the request only asked for an action."""
+    """What the run says out loud from the page it ended on. A finished action request stays silent; a run that
+    stopped early always speaks, because "I got stuck" alone hides a played-out game and its score."""
+    stopped = context.get("outcome") == "stopped"
     output, helper = text_json("A spoken answer", ANSWER, context, "ANSWER_MODEL")
     value = output.get("answer") if isinstance(output, dict) else ""
     question = output.get("question") if isinstance(output, dict) else None
+    spoken = isinstance(value, str) and value.strip() and len(value) <= 600
     if (
         set(output or {}) != {"question", "answer"}
         or not isinstance(question, bool)
-        or question and (not isinstance(value, str) or not value.strip() or len(value) > 600)
+        or (question or stopped) and not spoken
     ):
-        raise ValueError("Text helper returned no valid answer; the task is done but nothing was said.")
-    if not question:
-        value = None  # An action request gets no answer, even if the helper wrote one anyway.
+        raise ValueError("Text helper returned no valid answer; the run ended but nothing was said.")
+    if not question and not stopped:
+        value = None  # A finished action request gets no answer, even if the helper wrote one anyway.
     value = value.strip() if value else None
     print(f"ANSWER helper: {value!r} — {helper['latency_ms']} ms — {helper['model']}", flush=True)
     return value, helper
