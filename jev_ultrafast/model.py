@@ -227,17 +227,29 @@ def field_context(goal, action, page, history):
     }
 
 
+def helper_key_names(setting):
+    """The key variables this helper reads, in the order it reads them. An empty value counts as unset."""
+    return tuple(dict.fromkeys([setting + "_API_KEY", "HELPER_API_KEY", "TEXT_MODEL_API_KEY"]))
+
+
+def helper_key(setting):
+    """The key this helper would actually send, or None when it has none. Whoever decides whether a helper can
+    run must ask the same question the call itself asks: gating on one spelling of it (TEXT_MODEL_API_KEY)
+    silently muted a configuration that names only HELPER_API_KEY, which helper_endpoint accepts."""
+    return next((os.environ[n] for n in helper_key_names(setting) if os.environ.get(n)), None)
+
+
 def helper_endpoint(setting):
     """Each helper may sit on its own provider. <SETTING>_API_KEY and <SETTING>_BASE_URL win where they are
     set; HELPER_API_KEY and HELPER_BASE_URL are the shared fallback (TEXT_MODEL_* is the older name for it,
     still honoured), so a one-provider setup needs no extra variables. The shared pair has a name of its own
     because TEXT_MODEL_* belongs to TYPE_TEXT: a free Mercury key there must not drag the gemini answer and
     map helpers onto Inception with it. An empty value counts as unset, so a blank slot falls back."""
-    names = dict.fromkeys([setting + "_API_KEY", "HELPER_API_KEY", "TEXT_MODEL_API_KEY"])
-    key = next((os.environ[n] for n in names if os.environ.get(n)), None)
+    key = helper_key(setting)
     if not key:
         raise ValueError(
-            f"{setting} needs {' or '.join(names)}; no value is hardcoded or guessed by the executor."
+            f"{setting} needs {' or '.join(helper_key_names(setting))}; "
+            "no value is hardcoded or guessed by the executor."
         )
     base = next(
         (

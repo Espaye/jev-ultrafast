@@ -3,7 +3,6 @@
 import base64
 import hashlib
 import json
-import os
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -15,6 +14,7 @@ from .model import (
     choose,
     field_context,
     field_text,
+    helper_key,
     map_context,
     map_place,
     spoken_answer,
@@ -54,6 +54,11 @@ GO_BACK = {
 EARLIER_REQUESTS = 5
 CYCLE_REPEATS = 3
 STALE_REPEATS = 2
+# One control clicked over and over, on a page that changes every time, escapes CYCLE_REPEATS: from_view holds
+# the page text, so a re-rendering list (a recommendation filter) looks like a new situation at every click.
+# Five is measured, not guessed: across every run recorded under artifacts/, the longest run of identical
+# consecutive clicks in a request that PASSED is two, and only two requests ever reached five, both failures.
+CLICK_REPEATS = 5
 
 
 def view(page, action):
@@ -130,7 +135,10 @@ class Agent:
         got, and this helper is the only thing that reads it. The run has ended either way; a failed answer is
         reported as such, never replaced by a guess."""
         state = self.state
-        if os.environ.get("TEXT_MODEL_API_KEY"):
+        # Whether the run can speak is the answer helper's own question: it resolves ANSWER_MODEL_API_KEY,
+        # then HELPER_API_KEY, then TEXT_MODEL_API_KEY. Gating on the last name alone left a configuration
+        # that sets only HELPER_API_KEY -- which helper_endpoint documents as enough -- silently mute.
+        if helper_key("ANSWER_MODEL"):
             try:
                 document = state["browser"].document_text()
             except (StalePage, RuntimeError):
@@ -444,9 +452,22 @@ class Agent:
             cycling = action["kind"] != "wait" and sum(
                 h.get("from_view") == view(page, action) for h in state["history"]
             ) >= CYCLE_REPEATS
+            # Clicking one target this many times in a row is not progress on any page. Only clicks: a game
+            # legitimately presses one arrow all game, a puzzle types letter after letter, and a map plays
+            # round after round through the same Next button, so those kinds are left alone.
+            hammering = len(state["history"]) >= CLICK_REPEATS and all(
+                h["kind"] == "click" and h["action"] == action["label"]
+                for h in state["history"][-CLICK_REPEATS:]
+            )
+            if hammering:
+                print(
+                    f"BLOCKED: {action['label'][:60]!r} was clicked {CLICK_REPEATS} times in a row",
+                    flush=True,
+                )
             state["status"] = (
                 "blocked"
                 if cycling
+                or hammering
                 or len(repeated) == 3
                 and all(
                     h["page_changed"] is False and h["kind"] != "wait" for h in repeated

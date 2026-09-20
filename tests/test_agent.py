@@ -501,11 +501,25 @@ def test_a_stopped_run_reads_what_it_reached_off_the_page(runner, monkeypatch):
 
 
 def test_a_stopped_run_without_a_text_key_stays_silent(runner, monkeypatch):
-    monkeypatch.delenv("TEXT_MODEL_API_KEY", raising=False)
+    for name in ("ANSWER_MODEL_API_KEY", "HELPER_API_KEY", "TEXT_MODEL_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
     helper = Mock()
     monkeypatch.setattr(loop, "spoken_answer", helper)
     assert stopped(runner, "play a round", "Game over")["status"] == "blocked"
     helper.assert_not_called()
+
+
+@pytest.mark.parametrize("name", ["ANSWER_MODEL_API_KEY", "HELPER_API_KEY", "TEXT_MODEL_API_KEY"])
+def test_any_key_the_answer_helper_would_use_lets_the_run_speak(runner, monkeypatch, name):
+    """The gate has to ask the question the call asks. TEXT_MODEL_API_KEY alone used to decide it, so a
+    configuration naming only HELPER_API_KEY -- which helper_endpoint documents as enough -- said nothing."""
+    for other in ("ANSWER_MODEL_API_KEY", "HELPER_API_KEY", "TEXT_MODEL_API_KEY"):
+        monkeypatch.delenv(other, raising=False)
+    monkeypatch.setenv(name, "test")
+    helper = Mock(return_value=("I got as far as the front page.", {"model": "t", "latency_ms": 5}))
+    monkeypatch.setattr(loop, "spoken_answer", helper)
+    assert stopped(runner, "play a round", "Game over")["answer"] == "I got as far as the front page."
+    assert model.helper_key("ANSWER_MODEL") == "test"
 
 
 def test_a_run_stopped_by_a_refused_target_speaks_too(runner, monkeypatch):
@@ -754,6 +768,52 @@ def test_cycling_between_pages_stops_even_when_nodes_are_rebuilt(runner):
         runner.state["decision"] = decision("e3")
         runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
         assert runner.state["status"] == ("blocked" if step == 4 else "ready")
+
+
+def rerendered(i, keys=False):
+    """The same controls, on a page whose content is new every time: what a filter that re-renders a list does."""
+    p = page()
+    p["text"] = f"Search results {i}"
+    if keys:
+        p["actions"] = [*p["actions"],
+                        {"id": "key_arrowdown", "kind": "key", "key": "ArrowDown", "label": "Arrow down"}]
+    p["fingerprint"] = fingerprint(p)
+    return p
+
+
+def clicking(runner, monkeypatch, choices, keys=False):
+    for name in ("ANSWER_MODEL_API_KEY", "HELPER_API_KEY", "TEXT_MODEL_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    runner.state["page"] = rerendered(0, keys)
+    runner.state["browser"].observe.side_effect = [rerendered(i, keys) for i in range(1, len(choices) + 1)]
+    for selected in choices:
+        runner.state["decision"] = decision(selected)
+        runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+        yield runner.state["status"]
+
+
+def test_clicking_one_control_over_and_over_stops_even_when_the_page_changes(runner, monkeypatch):
+    """from_view holds the page text, so a control that re-renders the page looks like a new situation at every
+    click and CYCLE_REPEATS never fires. A recorded run clicked one such filter eight times."""
+    statuses = list(clicking(runner, monkeypatch, ["e3"] * loop.CLICK_REPEATS))
+    assert statuses == ["ready"] * (loop.CLICK_REPEATS - 1) + ["blocked"]
+
+
+def test_one_click_short_of_the_limit_keeps_going(runner, monkeypatch):
+    assert list(clicking(runner, monkeypatch, ["e3"] * (loop.CLICK_REPEATS - 1))) == \
+        ["ready"] * (loop.CLICK_REPEATS - 1)
+
+
+def test_another_click_in_between_resets_the_count(runner, monkeypatch):
+    """Only an unbroken run counts: alternating between two controls is the cycle guard's business, not this."""
+    choices = ["e3"] * (loop.CLICK_REPEATS - 1) + ["e2"] + ["e3"] * (loop.CLICK_REPEATS - 1)
+    assert set(clicking(runner, monkeypatch, choices)) == {"ready"}
+
+
+def test_repeating_one_key_is_not_a_repeated_click(runner, monkeypatch):
+    """A game presses one arrow all game and a puzzle types letter after letter; only clicks are counted."""
+    presses = ["key_arrowdown"] * (loop.CLICK_REPEATS + 2)
+    assert set(clicking(runner, monkeypatch, presses, keys=True)) == {"ready"}
 
 
 def test_a_client_side_route_change_counts_as_leaving_the_page():

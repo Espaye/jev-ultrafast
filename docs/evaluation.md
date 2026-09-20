@@ -190,3 +190,30 @@ The images pair still fails 0/6, as it did last round, but twice by a new route:
 
 - **The measurement harness dies on an emoji.** One request per suite run ends with `UnicodeEncodeError: 'charmap' codec can't encode character` when a page label or answer containing an emoji is printed to a Windows console. It predates this round — `round3-2` and `round3-3`, measured on `97298cc`, carry the same error — and it is a printing failure in the script, not in the loop: the request it kills is still checked on its final page, and it passed in this round's run 1. Left alone here so this round stays one change.
 - **A follow-up multiplies a wrong turn.** Because each request continues from the page the last one ended on, the YouTube Short cost two requests rather than one. This is by design and worth remembering when reading a conversation total: ten requests are not ten independent samples.
+
+## Two contained fixes after this round
+
+Both are corrections to the round above, measured separately from it so the cause of any move is unambiguous.
+
+**A run could be silently unable to speak.** `report()` asked whether `TEXT_MODEL_API_KEY` was set, but the answer helper resolves `ANSWER_MODEL_API_KEY`, then `HELPER_API_KEY`, then `TEXT_MODEL_API_KEY`. A configuration naming only `HELPER_API_KEY` — which `helper_endpoint` documents as sufficient, and which `.env.example`'s one-provider setup encourages — therefore said nothing at all, on every ending, with no error. The gate now asks `helper_key("ANSWER_MODEL")`, the same question the call asks. The measured configuration here sets `TEXT_MODEL_API_KEY`, so this appears in no number; four tests cover it.
+
+**One control clicked over and over now stops the run.** `from_view` hashes the page text along with the action, so a control that re-renders the page on every click — a recommendation filter, a “load more” that replaces the list — looks like a new situation each time and `CYCLE_REPEATS` never fires. The recorded case is a run that clicked “From Dutchsteammachine” eight times. An unbroken run of five identical **clicks** now ends the request as `blocked`, which the answer helper then reads out. Only clicks: a game presses one arrow all game, a puzzle types letter after letter, and a map plays round after round through the same Next button.
+
+The threshold is measured rather than chosen. Across every run recorded under `artifacts/`, counting the longest unbroken run of identical consecutive clicks in each request:
+
+| Longest identical click run | Requests | Outcome |
+| --- | --- | --- |
+| 2 | many | the only length ever reached by a request that **passed** |
+| 3–4 | 7 | all failed (Al Jazeera's empty player, `ns.nl`, Hacker News) |
+| 5 | 1 | failed (`ns.nl`, “Vertrek Nu”) |
+| 8 | 1 | failed (YouTube, “From Dutchsteammachine”) |
+
+So five is below every observed failure of this shape and above every observed success. It is still a containment change and nothing more: it cannot turn a failing request into a passing one, because a target clicked five times is not the target the request needed.
+
+| Suite | The round above | With both fixes | Requests |
+| --- | --- | --- | --- |
+| [`scripts/conversations.py`](../scripts/conversations.py) | 20/30 | **20/30** | 3 runs of 10 |
+| [`scripts/answers.py`](../scripts/answers.py) | 18/18 | **6/6** | 1 run of 6 |
+| [`scripts/keys.py`](../scripts/keys.py) | 13/15 | **5/5** | 1 run of 5 |
+
+The conversation total is identical, failure for failure: the images pair 0/6 (now by leaving Google for `pngtree.com`), “play the first video” 0/3 on the same Short, “open the channel of this video” 1/3. **The new guard did not fire once** in those 30 requests, nor in the 11 of the other two suites — which is the expected result for a bound on a shape that only appears when a request is already lost. The `answers` and `keys` figures are single runs, run to confirm nothing broke; they are not three-run measurements and the `keys` 5/5 says nothing new about wordly.org's flake.
