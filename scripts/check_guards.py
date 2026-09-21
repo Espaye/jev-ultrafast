@@ -4,7 +4,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from jev_ultrafast.agent import GO_BACK, KEY_ACTIONS, TYPE_KEYS
-from jev_ultrafast.browser import Browser, StalePage
+from jev_ultrafast.browser import BUILDING, Browser, StalePage
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -171,6 +171,27 @@ def main():
         # A tile mid-flip has no colour of its own; its row's "locked" must not stand in for one.
         assert "U (" not in text, text
         passed.append("state carried only by colour reaches the text; layout classes do not")
+
+        # Google's AI Mode button carries its own <style>; its name was a line of CSS on every Google page.
+        browser.navigate("data:text/html," + quote(
+            "<title>Styled</title><button><style>.mode{display:none}</style>AI Mode</button>"))
+        labels = [a["label"] for a in browser.observe(screenshot=False)["actions"] if a["kind"] == "click"]
+        assert labels == ["AI Mode"], labels
+        passed.append("a control's own stylesheet is not part of its name")
+
+        # GitHub's repository page replaces its placeholders over a second; its Releases link comes last. Timed
+        # with requestAnimationFrame: Chrome throttles timers in a background tab, not frames.
+        browser.navigate("data:text/html," + quote(
+            "<title>Filling in</title><p class=hide-skeleton>Watch page</p><div aria-busy=true hidden>Menu</div>"
+            "<div id=side>" + "<div class=Skeleton style='width:90px;height:9px'></div>" * 3 + "</div><script>"
+            "const t0=performance.now(), step=()=>{const t=performance.now()-t0, side=document.querySelector('#side');"
+            "if (t>100 && side.children.length===3) side.firstChild.remove();"
+            "if (t>700) { side.innerHTML='<a href=#releases>Releases</a>'; return; } requestAnimationFrame(step); };"
+            "requestAnimationFrame(step);</script>"))
+        labels = [a["label"] for a in browser.observe(screenshot=False)["actions"]]
+        assert "Releases" in labels, labels
+        assert browser.evaluate(BUILDING) == [False, 0]  # Hidden busy marks and real content do not count.
+        passed.append("a page replacing its placeholders is read once they are gone; hidden busy marks do not count")
 
         browser.navigate((ROOT / "scripts" / "fixtures" / "2048.html").as_uri())
         page = browser.observe(screenshot=False)

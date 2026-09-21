@@ -217,3 +217,86 @@ So five is below every observed failure of this shape and above every observed s
 | [`scripts/keys.py`](../scripts/keys.py) | 13/15 | **5/5** | 1 run of 5 |
 
 The conversation total is identical, failure for failure: the images pair 0/6 (now by leaving Google for `pngtree.com`), “play the first video” 0/3 on the same Short, “open the channel of this video” 1/3. **The new guard did not fire once** in those 30 requests, nor in the 11 of the other two suites — which is the expected result for a bound on a shape that only appears when a request is already lost. The `answers` and `keys` figures are single runs, run to confirm nothing broke; they are not three-run measurements and the `keys` 5/5 says nothing new about wordly.org's flake.
+
+# Evaluation: a site named without its address
+
+**Where this came from.** A user asked *“On GitHub: find jkudish/jev-browser, open Releases, stop on the newest”*. The first run stopped on an empty Google page (*“I got as far as the Google homepage, but I was unable to navigate to GitHub”*); the same request, asked again straight after, finished on the release list. Rerun fresh from Google on `b41538a`, the commit before this round, it failed **3 out of 3**, each time the same way.
+
+**Why the first run failed.** Four steps, each needed for the next:
+
+1. The request names GitHub but not `github.com`, so it starts on Google, and the text helper typed the bare name `jkudish/jev-browser` (6 of 6 in a probe). Google's first screen of results for that has no GitHub link: an AI-skill directory, three YouTube videos and *“Did you mean: kudish/web-browser”*. The repository is indexed; it ranks below them.
+2. `WEB_SEARCH` was offered on those results. It was hidden only on the exact start address `https://www.google.com/?hl=en`, so a results page counted as “another site”, and its label said *“google.com's own search box only finds google.com content”*. With no GitHub link in view the model took it (probability 0.42–0.55) and went back to an empty Google page.
+3. There it clicked **Google Search** under the now empty field three times. Nothing changed, and the unchanged-page guard ended the run. In another run it retyped the same query, got the same results, took `WEB_SEARCH` again, and the cycle guard ended it.
+4. The spoken answer read the empty page correctly, which is how the user heard where it stopped.
+
+**Why the second run worked.** No code differed. Asked again, the request was a follow-up, and its goal carried the first attempt marked *(not finished)*. With that context the text helper added “github” to the query (4 of 6 in the probe, against 0 of 6 fresh). Google then lists the jkudish profile first, a GitHub link was in view, and the model clicked it (0.77, against 0.15 for `WEB_SEARCH`). It was chance, not a recovery.
+
+## What changed
+
+- **`WEB_SEARCH` is not offered on Google's own search pages** (`/`, `/search` and `/webhp` on any `google.*` domain). They already search the whole web; leaving them only swaps the results for an empty page. It is still offered everywhere else, Google Flights included. `WEB_SEARCH` was never chosen in any of the 635 requests recorded before this round, so no earlier number can move because it is gone.
+- **A web search for a request that names a site carries the site's name** (one sentence in `TEXT_VALUE`), and a site's own search box never does. Probed with the text helper, 10 samples per field on live pages: the fresh GitHub request named GitHub 10/10 (was 0/6), as `on GitHub`, `GitHub` or `site:github.com`, all three of which put a GitHub link first. YouTube's and Coolblue's own boxes, the word game, and the Yemen news, cow and weather queries were unchanged, and the Wikipedia query was already `Eiffel Tower Wikipedia` most of the time.
+- **A click that changed nothing is not offered again on that page**, as a key already was not. The search button under an empty field is now clicked once, then withheld.
+- **A control's own `<style>` is not part of its name.** Google's **AI Mode** button carries one, so every Google page listed a link named `.plR5qb.PHjFye .CcxW7b{display:none}…`.
+
+Fixing Google took the request to GitHub every time, and then **3 of 5** runs passed. The two failures showed that Jev read GitHub's pages before they had finished arriving, in three separate ways, all fixed in `browser.py`:
+
+- **A new tab was read while still blank.** This Chrome profile has Google's “open each result in a new window” setting, so a result opens a new tab, and a new tab is `about:blank`, and “complete”, until the link's page commits. One run chose `DONE` on the blank page and had it accepted before the page arrived. A new tab is now read once it has left `about:blank` (at most 5 s).
+- **The repository page was read before its sidebar.** GitHub loads the page with skeleton placeholders and replaces them over about a second, and the Releases link comes last. Read after the old 150 ms quiet rule, the page had no Releases, and three runs clicked **Activity**, the nearest link, one of them never recovering. The page is now read once its placeholders have stopped being replaced (at most 3 s). A replacement is what counts, because YouTube shows placeholders that are never replaced: masthead icons, and an empty grid on the home page.
+- **A click inside GitHub was read before its page came.** GitHub's navigation marks the page `aria-busy` for about half a second before it changes the address. Read in between, the old page looked unchanged, and the next choice was made on it and refused. A visible `aria-busy` now counts as still loading.
+
+Checked without any model call, by clicking the way Jev does and reading the page it reads:
+
+| Jev's first read after the click | `b41538a` | This round |
+| --- | --- | --- |
+| Into the repository from the profile's list: Releases present | 0/6 | **8/8** |
+| Releases, on the repository page: the release list read | 0/8 | **8/8** |
+
+## The request itself
+
+| Code | Runs from Google | Ended on the release list or the release marked Latest |
+| --- | --- | --- |
+| `b41538a` | 3 | **0/3** |
+| Google-side changes only | 5 | **3/5** (one `DONE` on a blank tab, one stop on the Activity page) |
+| This round | 5, the user's own wording | **5/5**, median 16.5 s |
+| This round, in `conversations.py` | 3 | **3/3**, median 15.7 s, median 9 decisions |
+
+The request is now the sixth conversation in [`scripts/conversations.py`](../scripts/conversations.py), checked by the final URL: the repository's release list, or a release page GitHub marks **Latest**.
+
+## Regression on the earlier evaluations
+
+| Suite | Previous round | This round | Requests |
+| --- | --- | --- | --- |
+| [`scripts/conversations.py`](../scripts/conversations.py), the ten requests measured before | 20/30 | **28/30** | 3 runs, median 5.6 s, median 3 decisions |
+| the GitHub request, new | — | **3/3** | 3 runs, median 15.7 s |
+| [`scripts/answers.py`](../scripts/answers.py) | 18/18 | **18/18** | 3 runs of 6 |
+| [`scripts/keys.py`](../scripts/keys.py) | 13/15 | **15/15** | 3 runs of 5 |
+
+No request ended in an error, so this is also the first three-run measurement of `7bf6d59` (a label the console cannot show no longer ends a request) and `b41538a` (five scrolls in a row stop a run), both committed unmeasured. The scroll guard fired once, on a request already lost (below).
+
+| Conversation | Request | Passed | Median time | Median decisions |
+| --- | --- | --- | --- | --- |
+| Google news | “look up the latest news about the war in Yemen” | 3/3 | 6.0 s | 3 |
+|  | “play the video” | 3/3 | 3.2 s | 3 |
+| Hacker News | “go to news.ycombinator.com and open the comments of the top story” | 3/3 | 3.3 s | 2 |
+| YouTube | “go to youtube.com and search for the moon landing” | 3/3 | 5.1 s | 5 |
+|  | “play the first video” | 2/3 | 3.4 s | 2 |
+|  | “open the channel of this video” | 2/3 | 8.7 s | 7 |
+| Wikipedia | “find the Wikipedia article about the Eiffel Tower” | 3/3 | 7.3 s | 4 |
+|  | “now open the article about the man who designed it” | 3/3 | 3.1 s | 2 |
+| Google Images | “look up a picture of a cow” | 3/3 | 7.3 s | 4 |
+|  | “show me sheep instead” | 3/3 | 7.0 s | 3 |
+| GitHub | “On GitHub: find jkudish/jev-browser, open Releases, stop on the newest” | 3/3 | 15.7 s | 9 |
+
+**The eight extra passes are two conversations, and only one is plausibly this round's work.**
+
+- **YouTube is the site.** Its first result for the moon landing was a `/watch` video in two runs and the same Short as last round (`youtube.com/shorts/YTCXN5qVAOA`) in the third. That Short fails the check, and the follow-up *“open the channel of this video”* started from it, scrolled the Shorts feed five times, and was stopped as `blocked` by the scroll guard. Last round the Short came first in two of the three runs. Nothing this round changed decides which result YouTube ranks first.
+- **Google Images went 0/6 → 6/6 by a new route, most likely the label fix.** Last round Jev typed first (`cow images`) and ended on ordinary results or on `pngtree.com`. This round its first move on Google's home page was the **Search for Images** link, in all three runs. That first decision sees one difference: the AI Mode button's label, which was a line of CSS. Asked that first decision on the same live page, TypeSafe typed first 6 times out of 6 with the old label and clicked **Search for Images** 4 times out of 6 with the new one. That is six samples each on one page; it makes the label fix the likely cause, and Google's own page may still have changed.
+
+**Slower where a page is filling itself in.** The new wait was A/B tested by loading each page five times with the old and the new code in alternation. Google's results, Hacker News, a YouTube watch page and nu.nl showed no difference beyond network noise (±0.5 s either way). **YouTube's home page is 0.66 s slower on every load**: its loading skeleton is replaced by the app, which starts the wait, and the grid of placeholders that follows stays, so the wait runs its full second. That is one load per conversation that starts on youtube.com. The GitHub repository page is about 0.2–0.3 s slower, which is the point. The median request rose from 5.0 s to 5.6 s, mostly because more requests now go further: the images pair and the YouTube channel request pass, and take more steps doing it.
+
+## What this round does not show
+
+- **The page-filling wait is a heuristic measured on GitHub alone.** It looks for `aria-busy` and for “skeleton” in a class name. A site whose placeholders are named otherwise, or that fills in after 3 s, is still read early, and the model then picks the nearest control, as it did here.
+- **The query rule rests on one live request.** It was probed on nine fields offline. Live, only the GitHub request exercises it, plus the Wikipedia request, whose query already named Wikipedia most of the time.
+- **Google's ranking of this repository will change.** As `jkudish/jev-browser` gains links, the bare-name query may start listing it first, and the GitHub conversation will then pass without testing the query rule at all.
+- **Five and three runs are small.** 0/3 → 5/5 on the request itself is a clear direction, not a rate.

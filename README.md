@@ -14,17 +14,18 @@ Say *"go to youtube.com and search for the moon landing"*, then *"play the first
 
 ## How well does it navigate?
 
-**28 of 30 spoken-style requests passed** in three runs of five conversations on live sites: Google, YouTube, Wikipedia, Hacker News and Google Images. Median **4.0 s** per request, including page loads, with a median of **3** decisions.
+**31 of 33 spoken-style requests passed** in three runs of six conversations on live sites: Google, YouTube, Wikipedia, Hacker News, Google Images and GitHub. Median **5.9 s** per request, including page loads, with a median of **3** decisions.
 
 | Conversation (each line continues from the one before) | Passed | Median |
 | --- | --- | --- |
-| *“look up the latest news about the war in Yemen”* → *“play the video”* | 3/3 → 2/3 | 4.5 s → 1.9 s |
-| *“go to news.ycombinator.com and open the comments of the top story”* | 3/3 | 2.0 s |
-| *“go to youtube.com and search for the moon landing”* → *“play the first video”* → *“open the channel of this video”* | 3/3 → 3/3 → 2/3 | 4.5 s → 2.1 s → 3.0 s |
-| *“find the Wikipedia article about the Eiffel Tower”* → *“now open the article about the man who designed it”* | 3/3 → 3/3 | 6.5 s → 1.6 s |
-| *“look up a picture of a cow”* → *“show me sheep instead”* | 3/3 → 3/3 | 5.4 s → 4.0 s |
+| *“look up the latest news about the war in Yemen”* → *“play the video”* | 3/3 → 3/3 | 6.0 s → 3.2 s |
+| *“go to news.ycombinator.com and open the comments of the top story”* | 3/3 | 3.3 s |
+| *“go to youtube.com and search for the moon landing”* → *“play the first video”* → *“open the channel of this video”* | 3/3 → 2/3 → 2/3 | 5.1 s → 3.4 s → 8.7 s |
+| *“find the Wikipedia article about the Eiffel Tower”* → *“now open the article about the man who designed it”* | 3/3 → 3/3 | 7.3 s → 3.1 s |
+| *“look up a picture of a cow”* → *“show me sheep instead”* | 3/3 → 3/3 | 7.3 s → 7.0 s |
+| *“On GitHub: find jkudish/jev-browser, open Releases, stop on the newest”* | 3/3 | 15.7 s |
 
-The two misses: Al Jazeera's live player never rendered a video in Jev's tab, and once Jev kept clicking a YouTube recommendation filter instead of the channel link. Both ended as `blocked`, not as a false success. Three runs of ten requests is a sanity check, not a benchmark, and live sites change daily: rerun on 2026-09-19, the cow → sheep pair failed 0/6 with both the code measured here and the current code, because Google's ordinary results now show a picture strip and Jev stops there instead of opening Images. Rerun again on 2026-09-20 it scored **20/30**: YouTube's “play the first video” now opens a Short, which the check rejects, and the commit before this round scores 4/9 against this round's 5/9 on that conversation the same day.
+The two misses are one wrong turn: in one run YouTube's first result for the moon landing was a Short, which the check rejects because it needs a `/watch` video, and the follow-up started from that Short, scrolled its feed, and was stopped as `blocked`, not as a false success. The GitHub request is new: a user's run of it stopped on an empty Google page, because Google's results for the bare repository name show no GitHub link and Jev left them for a fresh Google search. Before this round's changes it failed 3 runs out of 3. Three runs is a sanity check, not a benchmark, and live sites change daily: the previous round scored 20/30 on the other ten requests. Two of the eight it missed were YouTube ranking the Short first more often that day; six were the cow → sheep pair, which a fix to how Jev names one Google button most likely turned around.
 
 Every request is checked on the final page by code that knows nothing about Jev's choices (a URL, a playing `<video>`, the story that was first on the front page). A `DONE` from Jev is never counted as a pass. Details, every run, and every failure: [docs/evaluation.md](docs/evaluation.md).
 
@@ -41,7 +42,7 @@ uv run jev
 
 Open **http://127.0.0.1:8766** in Chrome, click **🎤 Speak**, and say what you want. Tick **Keep listening** to hold a conversation: the mic stays open, including while Jev works, until you say *"stop listening"* or click it off. Talking over a run pauses it after the current step: *"stop"* or *"wait"* ends that task, anything else ("no, the blue one") replaces it as a correction, and a cough lets it carry on. When a request asks something (*"what's the weather in Utrecht?"*, *"how tall is it?"*), Jev reads the answer off the page it finished on and says it; otherwise it says "Done in 3 seconds." A run that stops before finishing reads that page too and says how far it got, so a game played to its last round reports its score instead of "I got stuck." The mic is muted while Jev speaks so it doesn't hear itself. Typing a request works the same way.
 
-- A request that names a site (*"open news.ycombinator.com"*) opens it. Otherwise Jev starts from a Google search; it cannot use the address bar.
+- A request that names a site (*"open news.ycombinator.com"*) opens it. Otherwise Jev starts from a Google search, with the site's name in the query when the request names one without its address (*"On GitHub: find …"*); it cannot use the address bar.
 - Follow-ups (*"play the video"*, *"open its channel"*) continue in Jev's tab, with earlier requests as context.
 - The inspector shows the numbered elements Jev saw, its operation and target probabilities, and every executed action. **Choose next** pauses before each action.
 
@@ -83,11 +84,11 @@ Model output never becomes selectors, screen coordinates, URLs, key codes or cod
 | | |
 | --- | --- |
 | **Voice + conversations** | Chrome speech recognition fills the request; spoken answers; follow-ups continue in the same tab with earlier requests as context. |
-| **Any website** | Start on a site named in the request or on a Google search; `WEB_SEARCH` lets Jev leave a page that cannot help. |
-| **Modern pages** | Waits for single-page apps that change the URL without a new document (nos.nl, YouTube), follows links that open a new tab, names images, videos and embedded players so "play the video" has visible evidence. |
-| **No more loops** | Fixed a homepage ↔ article bounce and a Pause ↔ Play toggle; a request that repeats the same action from the same page three times now stops as blocked. A target the executor refuses on a page that did not change is not offered again, so a submit button under a suggestion list sends Jev to Enter instead of back to the same click. One action chosen five times in a row stops the run, clicks and scrolls alike, which the same-page guard misses when every step re-renders the page: a filter that rebuilds its own list, a feed that scrolls to the next video for ever. |
+| **Any website** | Start on a site named in the request or on a Google search; `WEB_SEARCH` lets Jev leave a page that cannot help, though not Google's own search pages, which already search the whole web. A request that names a site without its address (*"On GitHub: …"*) searches Google with the site's name in the query, so the site's own pages come first. |
+| **Modern pages** | Waits for single-page apps that change the URL without a new document (nos.nl, YouTube), follows links that open a new tab once that tab has left `about:blank`, and reads a page only when it has stopped filling itself in: marked `aria-busy` (GitHub's navigation) or still replacing skeleton placeholders, for up to 3 s. Names images, videos and embedded players so "play the video" has visible evidence. |
+| **No more loops** | Fixed a homepage ↔ article bounce and a Pause ↔ Play toggle; a request that repeats the same action from the same page three times now stops as blocked. A target the executor refuses on a page that did not change is not offered again, so a submit button under a suggestion list sends Jev to Enter instead of back to the same click. One action chosen five times in a row stops the run, clicks and scrolls alike, which the same-page guard misses when every step re-renders the page: a filter that rebuilds its own list, a feed that scrolls to the next video for ever. A key or click that changed nothing is not offered again on that page, so a search button under an empty field sends Jev to the field instead of three clicks and a stop. |
 | **Spoken answers** | A question gets an answer read from the page (the weather, the next train, a price), checked against Open-Meteo and the page itself; a finished action request gets none. A run that stopped early always says what it reached. |
-| **Keyboard + Back** | Arrow keys, Enter and typed letters for games and word puzzles; the browser's Back button. A key that changed nothing is not offered again on that page. |
+| **Keyboard + Back** | Arrow keys, Enter and typed letters for games and word puzzles; the browser's Back button. |
 | **Honest evaluation** | [`scripts/conversations.py`](scripts/conversations.py) runs spoken-style conversations and checks every request independently; [`scripts/answers.py`](scripts/answers.py) checks what Jev says; [`scripts/keys.py`](scripts/keys.py) checks keyboard tasks. |
 
 ## Use the library
@@ -128,6 +129,7 @@ uv run --env-file .env python examples/run.py \
 - Speech recognition is Chrome's; the evaluation feeds transcripts as text, so it measures browsing, not hearing. Anything the mic picks up becomes a request.
 - A `DONE` can be wrong: in two development runs Jev typed "cow", clicked Google's Images link instead of searching, and reported done on an empty page. Check outcomes that matter.
 - The loop guards stop the same action repeated from a page that looks the same, and one click or scroll repeated five times in a row. Keys are exempt: a game presses one arrow all game. Alternating between two controls that each change the page is still only ended by the step budget or the model's own `BLOCKED`.
+- Knowing when a page has finished is a heuristic: a quiet moment, an `aria-busy` mark, skeleton placeholders being replaced. A section that loads with none of those signs, or after 3 s, is read before it arrives, and the model may pick the nearest control instead. Waiting costs time too: YouTube's home page, whose loading skeleton gives way to a grid of placeholders that stays, now takes about 0.7 s longer to load.
 - The DOM reader handles common HTML and ARIA controls. Shadow roots, cross-origin frames (Jev sees an embedded player but cannot click inside it), canvas, uploads and drag-and-drop are out of scope.
 - Jev's tab shares your Chrome profile: logins, cookies and extensions apply.
 

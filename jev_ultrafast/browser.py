@@ -22,6 +22,15 @@ MUTATIONS = """(() => {
   }
   return window.__jevMutations.count;
 })()"""
+# Signs that part of the page is still on its way: Turbo (GitHub) marks the page aria-busy from a click until the
+# next page is in, and skeleton placeholders stand in for sections fetched after the rest. Hidden ones do not count,
+# nor does a "skeleton" class on an element with text of its own (YouTube's hide-skeleton): a placeholder has none.
+BUILDING = """(() => {
+  const shown = e => e.checkVisibility({checkOpacity: true, checkVisibilityCSS: true});
+  return [[...document.querySelectorAll('[aria-busy="true"]')].some(shown),
+          [...document.querySelectorAll('[class*="skeleton" i]')].filter(e => shown(e) && !e.textContent.trim())
+            .length];
+})()"""
 
 
 class StalePage(ValueError):
@@ -45,6 +54,8 @@ def session_cdp(method, session, **params):
 
 
 class Browser:
+    placeholders = changed_at = None  # Skeleton placeholders seen since the current load began; see settle().
+
     def __init__(self, url):
         ensure_daemon()
         self.attach(cdp("Target.createTarget", url="about:blank", background=True)["targetId"])
@@ -63,31 +74,63 @@ class Browser:
         self.call("Emulation.setFocusEmulationEnabled", enabled=True)
 
     def wait_for_load(self):
+        # Placeholders are counted from the start of the load: a page replaces most of them before it reports
+        # complete, and being replaced is what tells them from placeholders that stay (YouTube's masthead icons).
+        self.placeholders = self.changed_at = None
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
             try:
-                if self.evaluate("document.readyState") == "complete":
-                    break
+                ready, (_busy, shown) = self.evaluate(f"[document.readyState, {BUILDING}]")
             except StalePage:
-                pass  # A fresh tab can still be swapping documents.
+                ready = None  # A fresh tab can still be swapping documents.
+            else:
+                self.count_placeholders(shown, loaded=ready == "complete")
+            if ready == "complete":
+                break
             time.sleep(0.02)
         self.settle()
 
+    def count_placeholders(self, shown, loaded=True):
+        """Remembers when placeholders last changed: when one gave way to what it stood for, or when new ones
+        appeared on a page that had loaded (a section it went to fetch). Ones that appear while the document loads
+        may stay for good (YouTube's masthead icons); only being replaced shows they were waiting for something."""
+        if self.placeholders is not None and (shown < self.placeholders or loaded and shown > self.placeholders):
+            self.changed_at = time.monotonic()
+        self.placeholders = shown
+
     def settle(self):
-        """Apps such as YouTube build the page after "load": wait for 150 ms without new elements, at most 1.5 s."""
-        deadline = time.monotonic() + 1.5
-        last, quiet_since = None, time.monotonic()
-        while time.monotonic() < deadline:
+        """Apps such as YouTube build the page after "load": wait for 150 ms without new elements, at most 1.5 s.
+        A page still filling itself in gets up to 3 s: while it is marked busy, and while placeholders remain
+        within a second of their last change (see count_placeholders). GitHub's repository sidebar, with its
+        Releases link, lands 0.7 s after its placeholders last changed; read before that, the page offered
+        Activity as the nearest thing. Placeholders that stay (YouTube's masthead icons) do not hold it up."""
+        started = time.monotonic()
+        last, quiet_since = None, started
+        while True:
             try:
-                count = self.evaluate(MUTATIONS)
+                count, (busy, shown) = self.evaluate(f"[{MUTATIONS}, {BUILDING}]")
             except StalePage:
                 return  # Still navigating; observe() retries until the new document can be read.
             now = time.monotonic()
-            if count != last:
+            self.count_placeholders(shown)
+            building = busy or bool(shown) and self.changed_at is not None and now - self.changed_at < 1
+            # Quiet starts when the busy mark goes: Turbo lifts it up to 130 ms before it swaps the address.
+            if count != last or busy:
                 last, quiet_since = count, now
-            elif now - quiet_since >= 0.15:
+            elif now - quiet_since >= 0.15 and not building:
+                return
+            if now - started >= (3 if building else 1.5):
                 return
             time.sleep(0.03)
+
+    def busy(self):
+        """A click can start loading the next page without changing the address yet: Turbo marks the page
+        aria-busy at once and swaps the address about half a second later. Read in between, the old page looked
+        unchanged, and the next choice was made on it."""
+        try:
+            return self.evaluate(BUILDING)[0]
+        except StalePage:
+            return True
 
     def left_page(self):
         """True when the last click loaded another document (Google → YouTube) or changed the address in the same
@@ -114,6 +157,16 @@ class Browser:
             cdp("Target.closeTarget", targetId=old)
         except RuntimeError:
             pass  # The opener may already be gone.
+        # A new tab is about:blank until the link's page commits, and a blank page is "complete" at once. Read that
+        # early, it offered nothing, and a DONE chosen on it was accepted before the page arrived.
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                if self.evaluate("location.href") != "about:blank":
+                    break
+            except StalePage:
+                pass
+            time.sleep(0.05)
         self.wait_for_load()
         return True
 
@@ -185,7 +238,7 @@ class Browser:
                       })""")
                 except RuntimeError:
                     pass
-            if action["kind"] == "click" and not self.follow_new_tab() and self.left_page():
+            if action["kind"] == "click" and not self.follow_new_tab() and (self.left_page() or self.busy()):
                 self.wait_for_load()
         # A cross-site navigation (Google → YouTube) can take seconds to commit.
         deadline = time.monotonic() + 3

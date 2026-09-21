@@ -568,7 +568,10 @@ def test_a_refused_target_returns_once_the_page_accepts_an_action(runner, monkey
     runner.command("tick")
     assert runner.state["rejected"]["ids"] == ["e3"]
     runner.state["browser"].act.side_effect = None
-    runner.command("tick")  # e3 is still withheld here; this tick is what clears it.
+    # e3 is still withheld here, so another action runs; any executed action clears the refusal. (e3 itself, run
+    # on this unchanged page, would now be withheld as a click that changed nothing.)
+    chooser.return_value = decision("wait")
+    runner.command("tick")
     assert runner.state["rejected"] is None
     runner.command("tick")
     offered = [a["id"] for a in chooser.call_args.args[0]["actions"]]
@@ -627,6 +630,11 @@ def test_follow_up_naming_a_site_opens_it_in_the_same_tab(runner):
     (False, "https://example.test/", False),
     (True, "https://example.test/", True),
     (True, "https://www.google.com/?hl=en", False),
+    # Google's results already search the whole web. Offered there, WEB_SEARCH read as "google.com cannot reach
+    # GitHub" on results with no GitHub link in view, and threw them away for the empty page the run began on.
+    (True, "https://www.google.com/search?q=jkudish%2Fjev-browser&hl=en", False),
+    (True, "https://www.google.nl/search?q=weer", False),
+    (True, "https://www.google.com/travel/flights?hl=en", True),  # Flights' own search only finds flights.
 ])
 def test_web_search_is_offered_only_in_conversations_and_away_from_search(runner, enabled, url, offered):
     p = page()
@@ -639,7 +647,8 @@ def test_web_search_is_offered_only_in_conversations_and_away_from_search(runner
     assert ("WEB_SEARCH" in model.action_space(actions)[2]) is offered
     if search:
         # Names the open site, so the model weighs "is this request about example.test?".
-        assert "instead of example.test" in search["label"] and "{site}" not in search["label"]
+        site = url.split("/")[2].removeprefix("www.")
+        assert f"instead of {site}" in search["label"] and "{site}" not in search["label"]
 
 
 def test_web_search_navigates_to_a_fixed_address(monkeypatch):
@@ -682,6 +691,46 @@ def test_a_key_that_changed_nothing_is_not_offered_again_on_that_page(runner, mo
     runner.command("predict")
     offered = {a.get("key") for a in choose.call_args.args[0]["actions"]}
     assert "ArrowUp" not in offered and "ArrowDown" in offered
+
+
+def test_a_click_that_changed_nothing_is_not_offered_again_on_that_page(runner, monkeypatch):
+    """Google's search button under an emptied field changes nothing. Offered again, it was chosen three times in
+    a row and the unchanged-page stop ended a run that typing into the field could still have rescued."""
+    runner.state["browser"].observe.return_value = runner.state["page"]  # The click changed nothing.
+    runner.state["decision"] = {**decision("e3"), "operation": "CLICK", "target": "2"}
+    runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+    assert runner.state["history"][-1]["page_changed"] is False and runner.state["status"] == "ready"
+    choose = Mock(return_value=decision("e1"))
+    monkeypatch.setattr(loop, "choose", choose)
+    runner.command("predict")
+    offered = {a["id"] for a in choose.call_args.args[0]["actions"]}
+    assert "e3" not in offered and "e1" in offered
+
+
+def test_a_withheld_click_returns_once_the_page_changes(runner, monkeypatch):
+    runner.state["browser"].observe.return_value = runner.state["page"]
+    runner.state["decision"] = {**decision("e3"), "operation": "CLICK", "target": "2"}
+    runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+    changed = page()
+    changed["text"] = "Search results"  # Whatever changed the page may have made the button useful.
+    changed["fingerprint"] = fingerprint(changed)
+    runner.state["page"] = changed
+    choose = Mock(return_value=decision("e1"))
+    monkeypatch.setattr(loop, "choose", choose)
+    runner.command("predict")
+    assert "e3" in {a["id"] for a in choose.call_args.args[0]["actions"]}
+
+
+def test_typing_that_changed_nothing_is_still_offered(runner, monkeypatch):
+    """Only keys and clicks are withheld: a field retyped later gets a different value from the text helper."""
+    monkeypatch.setattr(loop, "field_text", Mock(return_value=("book", {"model": "test", "latency_ms": 1})))
+    runner.state["browser"].observe.return_value = runner.state["page"]
+    runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})  # The fixture's decision fills e1.
+    assert runner.state["history"][-1]["page_changed"] is False
+    choose = Mock(return_value=decision("e3"))
+    monkeypatch.setattr(loop, "choose", choose)
+    runner.command("predict")
+    assert "e1" in {a["id"] for a in choose.call_args.args[0]["actions"]}
 
 
 def test_keys_are_targets_of_one_operation_not_page_elements():
@@ -742,6 +791,7 @@ def test_a_click_that_opens_a_new_tab_moves_the_run_there(monkeypatch):
     b.target = "jev"
     b.attach = Mock()
     b.wait_for_load = Mock()
+    b.evaluate = Mock(return_value="https://en.wikipedia.org/wiki/Eiffel_Tower")
     targets = [
         {"targetId": "jev", "type": "page"},
         {"targetId": "users-tab", "type": "page"},
@@ -753,6 +803,85 @@ def test_a_click_that_opens_a_new_tab_moves_the_run_there(monkeypatch):
     b.attach.assert_called_once_with("wiki")
     cdp.assert_any_call("Target.closeTarget", targetId="jev")
     assert all(c.kwargs.get("targetId") != "users-tab" for c in cdp.call_args_list)
+
+
+def test_a_new_tab_is_read_only_once_it_left_about_blank(monkeypatch):
+    """A new tab is about:blank, and "complete", until the link's page commits. Read then, it offered nothing and a
+    DONE chosen on the blank page was accepted before the page arrived (Google's "open results in a new window")."""
+    import jev_ultrafast.browser as browser
+
+    b = browser.Browser.__new__(browser.Browser)
+    b.target = "jev"
+    b.attach = Mock()
+    order = []
+    b.wait_for_load = Mock(side_effect=lambda: order.append("load"))
+    addresses = iter(["about:blank", "about:blank", "https://github.com/jkudish/jev-browser"])
+    b.evaluate = Mock(side_effect=lambda _: order.append("href") or next(addresses))
+    targets = [{"targetId": "jev", "type": "page"}, {"targetId": "gh", "type": "page", "openerId": "jev"}]
+    monkeypatch.setattr(browser, "cdp", Mock(return_value={"targetInfos": targets}))
+    monkeypatch.setattr(browser.time, "sleep", Mock())
+    assert b.follow_new_tab()
+    assert order == ["href", "href", "href", "load"]
+
+
+def loaded_at(monkeypatch, page_at):
+    """When wait_for_load() returns on a scripted page: page_at(t) -> (readyState, mutations, busy, placeholders)."""
+    import jev_ultrafast.browser as browser
+
+    clock = [0.0]
+    monkeypatch.setattr(browser.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(browser.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    b = browser.Browser.__new__(browser.Browser)
+
+    def evaluate(expression):
+        ready, mutations, busy, shown = page_at(clock[0])
+        return [ready if expression.startswith("[document.readyState") else mutations, [busy, shown]]
+
+    b.evaluate = evaluate
+    b.wait_for_load()
+    return clock[0]
+
+
+def github_click(t):
+    """Measured on github.com after an in-site click in the same document: marked busy until the page
+    is in, then 36 placeholders, 6, and 5 for 0.7 s with nothing else changing, then the sidebar with Releases."""
+    if t < 0.2:
+        return "complete", 1, True, 0
+    if t < 0.5:
+        return "complete", 2, False, 36
+    if t < 0.55:
+        return "complete", 3, False, 6
+    if t < 1.25:
+        return "complete", 4, False, 5
+    return "complete", 5, False, 0
+
+
+def github_load(t):
+    """Measured on a full load of github.com/jkudish/jev-browser: 36 placeholders fall to 5 before the document is
+    complete, and those 5 stay 0.5 s with nothing else changing before the sidebar with Releases replaces them."""
+    if t < 0.3:
+        return "interactive", 0, False, 36
+    if t < 0.4:
+        return "interactive", 0, False, 5
+    if t < 0.9:
+        return "complete", 0, False, 5
+    return "complete", 1, False, 0
+
+
+@pytest.mark.parametrize(("page_at", "earliest", "latest"), [
+    (lambda t: ("complete", 1, False, 0), 0.15, 0.25),  # A quiet page: the old 150 ms rule.
+    (github_click, 1.25, 1.5),  # Read at 0.7 s before, without Releases.
+    (github_load, 0.9, 1.15),  # Read at 0.55 s before, without Releases.
+    # YouTube's masthead icons and empty home grid: placeholders that appear and stay, which nothing replaces.
+    (lambda t: ("interactive" if t < 0.3 else "complete", 0 if t < 0.3 else 1, False, 0 if t < 0.2 else 3),
+     0.3, 0.55),
+    (lambda t: ("complete", 1, t < 0.8, 0) if t < 0.8 else ("complete", 2, False, 0), 0.8, 1.05),  # Turbo busy.
+    (lambda t: ("complete", 1, True, 0), 3.0, 3.1),  # Marked busy for ever: still bounded.
+    # Turbo lifts the busy mark up to 130 ms before it swaps the address, with no element changing in between.
+    (lambda t: ("complete", 1, t < 0.5, 0) if t < 0.62 else ("complete", 2, False, 0), 0.77, 0.9),
+])
+def test_loading_waits_for_a_page_that_is_still_filling_itself_in(monkeypatch, page_at, earliest, latest):
+    assert earliest <= loaded_at(monkeypatch, page_at) <= latest
 
 
 def test_cycling_between_pages_stops_even_when_nodes_are_rebuilt(runner):

@@ -3,11 +3,12 @@
 import base64
 import hashlib
 import json
+import re
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .browser import SEARCH_URL, Browser, StalePage
+from .browser import Browser, StalePage
 from .console import say
 from .model import (
     action_space,
@@ -65,12 +66,25 @@ ACTION_REPEATS = 5
 # Only where repeating one action is never progress. A game presses one arrow all game, a puzzle types letter
 # after letter, and a map plays round after round through the same Next button, so those kinds are left alone.
 GUARDED_KINDS = {"click", "scroll"}
+# A key or click that changed nothing is not offered again on that same page: it would change nothing again.
+# 2048 ignores an arrow against a wall for good, and Google's search button under an emptied field was
+# clicked three times in a row, which ended a run that typing into the field could still have rescued.
+INERT_KINDS = {"key", "click"}
 
 
 def view(page, action):
     """What the model saw and did, without DOM node ids: client-side apps rebuild elements on every visit."""
     seen = [page["url"], page["text"], action["kind"], action["label"]]
     return hashlib.sha256(json.dumps(seen).encode()).hexdigest()
+
+
+def searches_the_web(url):
+    """Google's own search pages, empty or full of results, already search the whole web. WEB_SEARCH there only
+    swapped the results for an empty page: results that happened to show no link to the site a request named
+    ("On GitHub: ...") read as "google.com cannot help", and the run went back to the page it started on."""
+    parts = urlsplit(url)
+    google = re.fullmatch(r"(www\.)?google(\.[a-z]{2,3}){1,2}", parts.hostname or "")
+    return google is not None and parts.path in {"/", "/search", "/webhp"}
 
 
 def follow_up_goal(earlier, request):
@@ -126,7 +140,7 @@ class Agent:
 
     def observe(self):
         page = self.state["browser"].observe(screenshot=self.screenshots)
-        if self.state.get("web_search") and not page["url"].startswith(SEARCH_URL):
+        if self.state.get("web_search") and not searches_the_web(page["url"]):
             site = urlsplit(page["url"]).hostname or "this site"
             site = site.removeprefix("www.")
             page["actions"].append({**WEB_SEARCH, "label": WEB_SEARCH["label"].format(site=site)})
@@ -193,7 +207,7 @@ class Agent:
             status="ready",
             answer=None,
             answer_error=None,
-            inert_keys=None,
+            inert=None,
             rejected=None,
             decisions=[],
             text_calls=[],
@@ -297,12 +311,10 @@ class Agent:
             if state.get("map_declined") == page["fingerprint"]:
                 # The helper that sees this exact page found nothing to place; offering the map again repeats it.
                 page = {**page, "actions": [a for a in page["actions"] if a["kind"] != "place"]}
-            inert = state.get("inert_keys") or {}
+            inert = state.get("inert") or {}
             if inert.get("fingerprint") == page["fingerprint"]:
-                # A key that changed nothing on this exact page (2048 against a wall) would change nothing again.
-                page = {**page, "actions": [
-                    a for a in page["actions"] if not (a["kind"] == "key" and a["key"] in inert["keys"])
-                ]}
+                # A key or click that changed nothing on this exact page would change nothing again.
+                page = {**page, "actions": [a for a in page["actions"] if a["id"] not in inert["ids"]]}
             rejected = state.get("rejected") or {}
             if rejected.get("fingerprint") == page["fingerprint"]:
                 # The executor refused these targets on this exact page (covered or gone); it would refuse again.
@@ -442,10 +454,10 @@ class Agent:
                 url=state["page"]["url"],
                 elapsed_ms=state["elapsed_ms"],
             )
-            if action["kind"] == "key" and not state["history"][-1]["page_changed"]:
-                inert = state.get("inert_keys") or {}
-                keys = inert.get("keys", []) if inert.get("fingerprint") == page["fingerprint"] else []
-                state["inert_keys"] = {"fingerprint": page["fingerprint"], "keys": [*keys, action["key"]]}
+            if action["kind"] in INERT_KINDS and not state["history"][-1]["page_changed"]:
+                inert = state.get("inert") or {}
+                ids = inert.get("ids", []) if inert.get("fingerprint") == page["fingerprint"] else []
+                state["inert"] = {"fingerprint": page["fingerprint"], "ids": [*ids, action["id"]]}
             if state["record"] and state["page"]["screenshot"]:
                 (self.record_dir / f"{state['elapsed_ms']:06d}.jpg").write_bytes(
                     base64.b64decode(state["page"]["screenshot"])

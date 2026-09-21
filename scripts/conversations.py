@@ -57,6 +57,15 @@ def top_story(first_page):
                 and a["rect"]["y"] > 20 and a["rect"]["w"] > 150)
 
 
+RELEASES = re.compile(r"https://github\.com/jkudish/jev-browser/releases(/latest|/tag/[^/?#]+)?/?(#.*)?$")
+
+
+def newest_release(page):
+    """The release list, newest first, or a single release that GitHub marks Latest."""
+    match = RELEASES.match(page["url"])
+    return match is not None and (not match.group(1) or match.group(1) == "/latest" or "Latest" in page["text"])
+
+
 # (name, [(request, check(final_page, first_page) -> bool, what the check means)])
 CONVERSATIONS = [
     ("news", [
@@ -99,6 +108,13 @@ CONVERSATIONS = [
         ("show me sheep instead",
          lambda p, _: "sheep" in p["url"].lower() and images(p),
          "Google Images results for sheep"),
+    ]),
+    # A request that names a site without its address starts on Google, and Google's results for the bare repository
+    # name show no link to GitHub: a user's run failed there, went back to an empty Google page, and stopped.
+    ("github", [
+        ("On GitHub: find jkudish/jev-browser, open Releases, stop on the newest",
+         lambda p, _: newest_release(p),
+         "jev-browser's release list, or the release GitHub marks Latest"),
     ]),
 ]
 

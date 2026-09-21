@@ -17,8 +17,10 @@
     return referenced || e.getAttribute('aria-label') ||
       [...(e.labels||[])].map(l=>name(l,seen)).filter(Boolean).join(' ') ||
       (['button','submit','reset'].includes(e.type) ? e.value : '') || e.getAttribute('alt') ||
+      // A control may carry its own <style> (Google's AI Mode button): its CSS is text, but not the name.
       (e.tagName==='INPUT' ? '' : [...e.childNodes].map(n=>n.nodeType===3 ? n.textContent :
-        n.nodeType===1 && n.getAttribute('aria-hidden')!=='true' ? name(n,seen) : '').join(' ').trim()) ||
+        n.nodeType===1 && n.getAttribute('aria-hidden')!=='true' && !n.matches('script,style,noscript,template') ?
+          name(n,seen) : '').join(' ').trim()) ||
       e.getAttribute('title') || e.getAttribute('placeholder') || '';
   };
   // A control whose only content is a picture without alt text (Wikipedia's lead photo) is named by the file shown.
