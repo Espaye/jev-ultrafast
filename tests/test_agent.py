@@ -426,6 +426,109 @@ def test_answers_use_their_own_model_and_fall_back_to_the_text_model(monkeypatch
     assert [b["reasoning_effort"] for b in bodies] == ["low", "none"]
 
 
+def copies_of(monkeypatch, *replies):
+    """hedged() over scripted copies: replies[n](release) is what copy n does; each copy runs in its own thread."""
+    import threading
+
+    monkeypatch.setattr(model, "lend_client", lambda request: request(None))
+    sent, release = [], threading.Event()
+
+    def request(_client):
+        sent.append(len(sent))
+        return replies[len(sent) - 1](release)
+
+    return request, sent, release
+
+
+def stall(release):
+    release.wait(5)  # Until the test lets it go.
+    return "late"
+
+
+def test_a_quick_answer_is_not_asked_twice(monkeypatch):
+    request, sent, _ = copies_of(monkeypatch, lambda _: "answer")
+    assert model.hedged(request, after=0.5) == ("answer", 1)
+    assert sent == [0]
+
+
+def test_a_stalled_request_gets_a_second_copy_and_the_first_answer_wins(monkeypatch):
+    """Google's shared pool made one answer wait 11.5 s for a 504, then 1 s more elsewhere. The copy sent after
+    `after` seconds answers while the first is still waiting."""
+    request, sent, release = copies_of(monkeypatch, stall, lambda _: "second")
+    assert model.hedged(request, after=0.05) == ("second", 2)
+    release.set()
+    assert sent == [0, 1]
+
+
+def test_a_request_that_fails_at_once_is_not_sent_again(monkeypatch):
+    def refused(_):
+        raise RuntimeError("Model provider returned HTTP 400; no action executed.")
+
+    request, sent, _ = copies_of(monkeypatch, refused)
+    with pytest.raises(RuntimeError, match="HTTP 400"):
+        model.hedged(request, after=0.5)
+    assert sent == [0]
+
+
+def test_one_failed_copy_leaves_the_other_to_answer(monkeypatch):
+    def stall_then_fail(release):
+        release.wait(5)
+        raise RuntimeError("Model connection failed; no action executed.")
+
+    def slow_answer(release):
+        release.set()  # The first copy fails now, before this one answers.
+        import time
+
+        time.sleep(0.05)
+        return "second"
+
+    request, _, _ = copies_of(monkeypatch, stall_then_fail, slow_answer)
+    assert model.hedged(request, after=0.05) == ("second", 2)
+
+
+def test_copies_in_flight_never_share_a_connection(monkeypatch):
+    import queue
+    import threading
+
+    monkeypatch.setattr(model, "IDLE_CLIENTS", queue.LifoQueue())
+    both_in, used = threading.Barrier(2, timeout=5), []
+
+    def request(client):
+        used.append(client)
+        both_in.wait()  # Both requests are on the wire at the same moment.
+        return client
+
+    threads = [threading.Thread(target=model.lend_client, args=(request,)) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert used[0] is not used[1]
+    assert model.lend_client(lambda client: client) in used  # Returned clients are reused, warm.
+
+
+def test_a_stalled_spoken_answer_is_asked_twice_and_says_so(monkeypatch, capsys):
+    import threading
+
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    monkeypatch.setattr(model, "ANSWER_HEDGE_AFTER", 0.05)
+    monkeypatch.setattr(model, "lend_client", lambda request: request(None))
+    release, calls = threading.Event(), []
+    reply = {"choices": [{"message": {"content": '{"question":false,"answer":null}'}}]}
+
+    def post(_url, _key, _body, client=None):
+        calls.append(client)
+        if len(calls) == 1:
+            release.wait(5)
+        return reply
+
+    monkeypatch.setattr(model, "post_json", post)
+    answer, helper = model.spoken_answer({"request": "open the releases"})
+    release.set()
+    assert answer is None and helper["copies"] == 2 and len(calls) == 2
+    assert "asked twice" in capsys.readouterr().out
+
+
 def test_deepseek_keeps_its_own_reasoning_switch(monkeypatch):
     """reasoning_effort is the shared spelling; DeepSeek is the one provider that needs its own."""
     monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")

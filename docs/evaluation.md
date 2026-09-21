@@ -320,3 +320,18 @@ Asking OpenRouter to try AI Studio first was built, tested and then removed. In 
 Checked in the real inspector page, driven by a script: the GitHub request's clock froze at **40.6 s** at `DONE`, the status read *“Jev reports complete · reading the page for an answer…”*, and the answer, another slow one, landed **6.7 s** later without moving the clock. Four tests pin it and fail on the previous code.
 
 **What this does not fix.** The slow answer call still happens: 5 of the 129 calls above that were not pinned to Vertex took over 5 s. The spoken reply, or the word "Done", still waits for it; only the time shown and reported stops counting it.
+
+## After this round: a second request for a stalled answer
+
+**Where the stall comes from.** OpenRouter's own record of each call (`/api/v1/generation`) lists every provider attempt and Google's `service_tier`. In two batches of the same answer call, about half ran on capacity reserved for OpenRouter (`provisioned`, 18 of 18 under 2.3 s) and half on Google's shared pool (`default`), where every long wait happened. A call on the shared pool either waited 5–11 s before its first token (the ten-token reply then took 0.1 s), or was cut off by Vertex with a 504 after 11.5 s and retried at Google AI Studio, about 13 s in all. The user's 14.8 s had that second shape. Nothing in the request chooses the tier.
+
+**What changed.** `hedged()` in `model.py`: when a spoken answer has not come back after 4 s, a second copy of the same request is sent, and whichever answers first is used. That is safe because the call only reads. 4 s sits above every unstalled answer measured, 1.4–3.8 s including real questions (Utrecht weather, the Eiffel Tower's height), and well below the stalls. Each copy borrows a client of its own, because parallel requests through one shared HTTP/2 client had failed 2–3 times in 90. The console says when an answer was asked twice. Only the spoken answer is hedged: the text helper runs on Inception, where no stall was seen, and map calls were not measured.
+
+| 50 alternating calls each, same finished-run context | Median | p90 | Slowest | Over 5 s | Second copies |
+| --- | --- | --- | --- | --- | --- |
+| One request, as before | 1.56 s | 2.46 s | **13.2 s** | 2 | — |
+| Second copy after 4 s | 1.57 s | 2.55 s | **5.9 s** | 2 (5.6, 5.9 s) | 3 |
+
+The median does not move, and a stall now ends at about 4 s plus one normal reply. The price is the extra requests, 3 in 50 here, about $0.0015 each.
+
+**Not fixed.** One call in the hedged arm failed in 2.9 s, before any second copy: OpenRouter replied *“google/gemini-3.8-flash is temporarily rate-limited upstream”*, a limit on its shared Google capacity, and the helper's one retry met the same. The run then says it could not read out what happened. It can happen with one request as well, and is not handled here. Separately, this account is held to 20 requests a minute for this model; one answer per run stays far below that.

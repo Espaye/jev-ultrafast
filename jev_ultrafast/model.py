@@ -4,6 +4,8 @@ import datetime
 import json
 import math
 import os
+import queue
+import threading
 import time
 
 import httpx
@@ -12,12 +14,16 @@ from .console import say
 from .questions import ANSWER, MAP_PLACE, NEXT_ACTION, TARGET, TEXT_VALUE
 
 CLIENT = httpx.Client(http2=True, timeout=25)
+# A spoken answer still unanswered after this many seconds gets a second copy of its request; see hedged().
+# Measured answers took 1.4-3.8 s when the provider was not stalled, and 9-14 s when it was.
+ANSWER_HEDGE_AFTER = 4
+IDLE_CLIENTS = queue.LifoQueue()
 
 
-def post_json(url, key, body):
+def post_json(url, key, body, client=None):
     for attempt in range(3):
         try:
-            response = CLIENT.post(
+            response = (client or CLIENT).post(
                 url, json=body, headers={"Authorization": f"Bearer {key}"}
             )
         except httpx.HTTPError:
@@ -31,6 +37,52 @@ def post_json(url, key, body):
             )
         return response.json()
     raise RuntimeError("Model unavailable")
+
+
+def lend_client(request):
+    """request(client) on a connection no other thread is using at the same time: parallel probes through one
+    shared client failed with "Model connection failed" 2-3 times in 90. Returned clients stay warm for reuse."""
+    try:
+        client = IDLE_CLIENTS.get_nowait()
+    except queue.Empty:
+        client = httpx.Client(http2=True, timeout=25)
+    try:
+        return request(client)
+    finally:
+        IDLE_CLIENTS.put(client)
+
+
+def hedged(request, after):
+    """request(client), and if it has not answered after `after` seconds, a second copy alongside it: whichever
+    answers first is used. Only for a call that changes nothing, such as the spoken answer. OpenRouter serves
+    Gemini from Google's capacity reserved for it or from Google's shared pool, and a call on the shared pool can
+    wait 5-11 s for its first token, or be cut off with a 504 after 11.5 s and sent elsewhere, 13 s in all. The
+    second copy is placed on whatever is free by then. Returns (result, copies sent)."""
+    results = queue.Queue()
+
+    def attempt():
+        try:
+            results.put((lend_client(request), None))
+        except Exception as error:  # Handed to the caller, which raises it.
+            results.put((None, error))
+
+    threading.Thread(target=attempt, daemon=True).start()
+    try:
+        return unpack(results.get(timeout=after)), 1
+    except queue.Empty:
+        pass
+    threading.Thread(target=attempt, daemon=True).start()
+    result, error = results.get()
+    if error is not None:
+        result, error = results.get()  # One copy failed; the other may still answer.
+    return unpack((result, error)), 2
+
+
+def unpack(outcome):
+    result, error = outcome
+    if error is not None:
+        raise error
+    return result
 
 
 def validate_choice(answer, ids):
@@ -323,34 +375,33 @@ def map_place(context, screenshot):
     return {"place": place.strip(), "lat": lat, "lng": lng}, helper
 
 
-def text_json(operation, system, context, setting="TEXT_MODEL"):
+def text_json(operation, system, context, setting="TEXT_MODEL", hedge_after=None):
     """One JSON reply from the OpenAI-compatible helper. setting names the model's variable (TEXT_MODEL, or
-    ANSWER_MODEL for spoken answers, which falls back to the text model when unset)."""
+    ANSWER_MODEL for spoken answers, which falls back to the text model when unset). hedge_after, in seconds,
+    sends a second copy of a request that has not answered by then; see hedged()."""
     if not os.environ.get(setting):
         setting = "TEXT_MODEL"
     base, key = helper_endpoint(setting)
     model = os.environ.get(setting, "deepseek-chat")
-    reasoning = reasoning_param(base, setting)
-    started = time.perf_counter()
+    body = {
+        "model": model,
+        "max_tokens": 1024,
+        "response_format": {"type": "json_object"},
+        **reasoning_param(base, setting),
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": json.dumps(context)},
+        ],
+    }
+    started, copies = time.perf_counter(), 1
     # A reply without content changes nothing in the browser, so asking once more is safe.
     for _attempt in range(2):
-        result = post_json(
-            base + "/chat/completions",
-            key,
-            {
-                "model": model,
-                "max_tokens": 1024,
-                "response_format": {"type": "json_object"},
-                **reasoning,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {
-                        "role": "user",
-                        "content": json.dumps(context),
-                    },
-                ],
-            },
-        )
+        if hedge_after:
+            result, copies = hedged(
+                lambda client: post_json(base + "/chat/completions", key, body, client=client), hedge_after
+            )
+        else:
+            result = post_json(base + "/chat/completions", key, body)
         try:
             content = result["choices"][0]["message"]["content"]
         except (KeyError, TypeError, IndexError):
@@ -358,7 +409,7 @@ def text_json(operation, system, context, setting="TEXT_MODEL"):
         if content:
             break
     latency_ms = round((time.perf_counter() - started) * 1000)
-    helper = {"model": model, "latency_ms": latency_ms, "usage": result.get("usage", {})}
+    helper = {"model": model, "latency_ms": latency_ms, "usage": result.get("usage", {}), "copies": copies}
     try:
         output = json.loads(content)
     except (ValueError, TypeError):
@@ -387,7 +438,7 @@ def spoken_answer(context):
     """What the run says out loud from the page it ended on. A finished action request stays silent; a run that
     stopped early always speaks, because "I got stuck" alone hides a played-out game and its score."""
     stopped = context.get("outcome") == "stopped"
-    output, helper = text_json("A spoken answer", ANSWER, context, "ANSWER_MODEL")
+    output, helper = text_json("A spoken answer", ANSWER, context, "ANSWER_MODEL", hedge_after=ANSWER_HEDGE_AFTER)
     value = output.get("answer") if isinstance(output, dict) else ""
     question = output.get("question") if isinstance(output, dict) else None
     spoken = isinstance(value, str) and value.strip() and len(value) <= 600
@@ -400,7 +451,8 @@ def spoken_answer(context):
     if not question and not stopped:
         value = None  # A finished action request gets no answer, even if the helper wrote one anyway.
     value = value.strip() if value else None
-    say(f"ANSWER helper: {value!r} — {helper['latency_ms']} ms — {helper['model']}")
+    asked = " — asked twice, the first request was still waiting" if helper["copies"] > 1 else ""
+    say(f"ANSWER helper: {value!r} — {helper['latency_ms']} ms — {helper['model']}{asked}")
     return value, helper
 
 
