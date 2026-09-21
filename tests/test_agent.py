@@ -476,6 +476,43 @@ def test_done_without_a_text_key_skips_the_answer(runner, monkeypatch):
     helper.assert_not_called()
 
 
+def test_the_inspector_gets_the_stop_first_and_the_answer_on_request(runner, monkeypatch):
+    """The inspector's clock stopped only when the answer came back, and an OpenRouter stall made that 15 s after
+    DONE. With answer_later the stop returns at once and the answer is a command of its own."""
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    helper = Mock(return_value=("14 degrees and cloudy.", {"model": "test", "latency_ms": 5}))
+    monkeypatch.setattr(loop, "spoken_answer", helper)
+    runner.answer_later = True
+    state = done(runner)
+    assert state["status"] == "done" and state["answer_pending"] and state.get("answer") is None
+    helper.assert_not_called()
+    state = runner.command("answer")
+    assert state["answer"] == "14 degrees and cloudy." and state["answer_pending"] is False
+    with pytest.raises(ValueError):
+        runner.command("answer")  # Asked once; a second request would be a second model call.
+
+
+def test_a_follow_up_does_not_inherit_an_answer_still_waiting(runner):
+    runner.answer_later = True
+    done(runner)
+    runner.new_task("and tomorrow?")
+    assert runner.state["answer_pending"] is False
+
+
+def test_the_run_time_ends_where_the_run_does_not_where_the_answer_does(runner, monkeypatch):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    now = [100.0]
+    monkeypatch.setattr(loop.time, "perf_counter", lambda: now[0])
+    runner.state["started_at"] = 90.0
+
+    def slow_answer(_context):
+        now[0] += 15  # The stall that kept the clock running.
+        return None, {"model": "test", "latency_ms": 15000}
+
+    monkeypatch.setattr(loop, "spoken_answer", slow_answer)
+    assert done(runner)["elapsed_ms"] == 10000
+
+
 def test_a_failed_answer_keeps_the_task_done_and_reports_the_failure(runner, monkeypatch):
     monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
     monkeypatch.setattr(loop, "spoken_answer", Mock(side_effect=RuntimeError("Model provider returned HTTP 402")))

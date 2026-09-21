@@ -95,6 +95,8 @@ def start(scenario, url, goal, body):
         record_dir=Path.cwd() / "artifacts" / "frames" if body.get("record") else None,
         # Real-web conversations may need another site; fixtures and the Flights demo stay where they are.
         web_search=scenario in CONVERSATION,
+        # The page stops its clock when the run stops, then asks for the spoken answer (app.js call()).
+        answer_later=True,
     )
     AGENT.state["scenario"] = scenario
     AGENT.state["decoy"] = body.get("decoy") if scenario == "steering" else None

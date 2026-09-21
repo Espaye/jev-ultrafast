@@ -100,7 +100,9 @@ def follow_up_goal(earlier, request):
 
 
 class Agent:
-    def __init__(self, url, goals, *, record_dir=None, screenshots=False, web_search=False):
+    answer_later = False  # See report().
+
+    def __init__(self, url, goals, *, record_dir=None, screenshots=False, web_search=False, answer_later=False):
         task = goals.strip() if isinstance(goals, str) else "\n".join(goals).strip()
         if not task:
             raise ValueError("Supply a task")
@@ -109,6 +111,7 @@ class Agent:
         self.browser = Browser(url)
         self.record_dir = Path(record_dir) if record_dir else None
         self.screenshots = screenshots or bool(record_dir)
+        self.answer_later = answer_later
         self.state = {"browser": self.browser, "web_search": web_search}
         try:
             page = self.observe()
@@ -123,6 +126,7 @@ class Agent:
             status="ready",
             answer=None,
             answer_error=None,
+            answer_pending=False,
             plan=plan,
             plan_index=0,
             decisions=[],
@@ -150,11 +154,24 @@ class Agent:
         return page
 
     def report(self):
+        """The run has stopped, finished or not. elapsed_ms is its own time, without the answer that follows:
+        that call can take seconds (an OpenRouter provider stall took 15) and is not browsing. With answer_later
+        the answer waits for command("answer"), so the inspector stops its clock here and says it is answering;
+        the library and the suites keep one call that returns with the answer."""
+        state = self.state
+        state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
+        if self.answer_later:
+            state["answer_pending"] = True
+            return self.snapshot()
+        return self.read_out()
+
+    def read_out(self):
         """What the run says out loud, for a finished request and for one that ran out of moves alike.
         A stopped run is not silence: the page it stopped on still holds the score, the result, or how far it
         got, and this helper is the only thing that reads it. The run has ended either way; a failed answer is
         reported as such, never replaced by a guess."""
         state = self.state
+        state["answer_pending"] = False
         # Whether the run can speak is the answer helper's own question: it resolves ANSWER_MODEL_API_KEY,
         # then HELPER_API_KEY, then TEXT_MODEL_API_KEY. Gating on the last name alone left a configuration
         # that sets only HELPER_API_KEY -- which helper_endpoint documents as enough -- silently mute.
@@ -178,7 +195,6 @@ class Agent:
             else:
                 state["answer"] = answer
                 state["text_calls"].append({**helper, "field": "spoken answer", "value": answer})
-        state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
         return self.snapshot()
 
     def new_task(self, goal, url=None):
@@ -207,6 +223,7 @@ class Agent:
             status="ready",
             answer=None,
             answer_error=None,
+            answer_pending=False,
             inert=None,
             rejected=None,
             decisions=[],
@@ -492,6 +509,10 @@ class Agent:
             )
             if state["status"] == "blocked":
                 return self.report()
+        elif name == "answer":
+            if not state.get("answer_pending"):
+                raise ValueError("No answer is waiting")
+            return self.read_out()
         else:
             raise ValueError("Unknown command")
         return self.snapshot()

@@ -300,3 +300,23 @@ No request ended in an error, so this is also the first three-run measurement of
 - **The query rule rests on one live request.** It was probed on nine fields offline. Live, only the GitHub request exercises it, plus the Wikipedia request, whose query already named Wikipedia most of the time.
 - **Google's ranking of this repository will change.** As `jkudish/jev-browser` gains links, the bare-name query may start listing it first, and the GitHub conversation will then pass without testing the query rule at all.
 - **Five and three runs are small.** 0/3 → 5/5 on the request itself is a clear direction, not a rate.
+
+## After this round: the answer is not the run's time
+
+**What the user saw.** A run of the GitHub request finished in a few seconds, and then the inspector's clock kept running for about 15 s, until the console printed `ANSWER helper: None — 14824 ms`. Every run ends with one call to the answer model, which decides whether the request asked something to say out loud. This request did not, so `None` was right, and the call was a formality. But the run's time was only set, and the inspector's clock only stopped, once that call came back.
+
+**Why the call took 15 s.** Not the model: the same call, repeated, always came back as 10 tokens with no reasoning. OpenRouter serves `google/gemini-3.8-flash` from two Google providers, and either one sometimes stalls:
+
+| Routing of the answer call | Calls | Over 5 s | The slow ones |
+| --- | --- | --- | --- |
+| OpenRouter's own choice, as shipped | 79 | 3 | 12.5–12.6 s, all in one early burst and all finished by the fallback provider |
+| Google Vertex only | 11 | 3 | 7.9 s, 8.1 s, and one still waiting at the 25 s client timeout |
+| Google AI Studio first | 50 | 2 | 7.2 s and 9.7 s, served by AI Studio itself |
+
+Asking OpenRouter to try AI Studio first was built, tested and then removed. In the first 20 AI Studio calls none stalled, but a 30-and-30 A/B alternating with the shipped routing gave AI Studio 2 stalls and the shipped routing none. The stalls come in bursts and hit both providers, so nothing in the table shows the pin helps.
+
+**What changed instead.** A run's own time no longer includes the answer. `report()` sets `elapsed_ms` when the run stops. With `Agent(answer_later=True)`, which the inspector uses, the answer waits for a separate `answer` command. `app.js` stops its clock at the stop, shows *“reading the page for an answer…”*, and asks for the answer as its own request. A voice run still speaks only when the answer is in, and its "Done in N seconds" counts the run, not the answer. The library and the suites keep one call that returns with the answer, as before. Their times are their own wall-clock measurements, so no suite number can move.
+
+Checked in the real inspector page, driven by a script: the GitHub request's clock froze at **40.6 s** at `DONE`, the status read *“Jev reports complete · reading the page for an answer…”*, and the answer, another slow one, landed **6.7 s** later without moving the clock. Four tests pin it and fail on the previous code.
+
+**What this does not fix.** The slow answer call still happens: 5 of the 129 calls above that were not pinned to Vertex took over 5 s. The spoken reply, or the word "Done", still waits for it; only the time shown and reported stops counting it.

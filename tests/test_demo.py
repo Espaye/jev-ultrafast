@@ -44,3 +44,17 @@ def test_follow_up_without_a_conversation_starts_a_web_search(monkeypatch):
     monkeypatch.setattr(demo, "response_state", lambda: {})
     demo.command("continue", {"goal": "open the wikipedia article about 9/11"})
     assert started == [("search", "https://www.google.com/?hl=en", "open the wikipedia article about 9/11")]
+
+
+def test_the_inspector_takes_the_stop_before_the_answer(monkeypatch):
+    """Its clock stops when the run does; app.js then asks for the answer as a request of its own."""
+    from unittest.mock import Mock
+
+    import jev_ultrafast.demo as demo
+
+    made = []
+    monkeypatch.setattr(demo, "AGENT", None)
+    monkeypatch.setattr(demo, "close_browser", lambda: None)
+    monkeypatch.setattr(demo, "Agent", lambda *args, **kwargs: made.append(kwargs) or Mock(state={}))
+    demo.start("search", "https://www.google.com/?hl=en", "find it", {})
+    assert made[0]["answer_later"] is True

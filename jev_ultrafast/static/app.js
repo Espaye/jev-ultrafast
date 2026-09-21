@@ -75,6 +75,8 @@ async function call(name, body = {}) {
   if (!response.ok) throw Error(data.error || "Request failed");
   state = data;
   render();
+  // The run has stopped and the clock with it; the spoken answer is its own request, which can take seconds.
+  if (data.answer_pending && name !== "answer") return call("answer");
   return data;
 }
 function controls() {
@@ -107,6 +109,8 @@ async function perform(fn, label) {
     try {
       state = await fetch("/api/state").then((r) => r.json());
       render();
+      // A run stopped by the step budget reports it as an error, with its answer still to come.
+      if (state.answer_pending) await call("answer");
     } catch {
       /* Preserve the original failure if the server disconnected. */
     }
@@ -138,12 +142,20 @@ function render() {
     done: "Jev reports complete · inspect the page",
     blocked: "Stopped · no supported next action",
   };
-  $("status").textContent = state.answer
-    ? `Jev ${state.status === "done" ? "answers" : "reports"}: ${state.answer}`
-    : labels[state.status] || state.status;
-  if (clock !== null && ["done", "blocked"].includes(state.status)) {
+  const ended = ["done", "blocked"].includes(state.status);
+  $("status").textContent = state.answer_pending
+    ? state.status === "done"
+      ? "Jev reports complete · reading the page for an answer…"
+      : "Stopped · reading how far it got…"
+    : state.answer
+      ? `Jev ${state.status === "done" ? "answers" : "reports"}: ${state.answer}`
+      : labels[state.status] || state.status;
+  // The clock stops when the run does; the answer that follows is not browsing time.
+  if (clock !== null && ended) {
     stopClock(true);
     recordSteering();
+  }
+  if (ended && !state.answer_pending) {
     if (voiceRun) {
       const n = Math.round((endedAt - startedAt) / 1000),
         seconds = `${n} second${n === 1 ? "" : "s"}`;
