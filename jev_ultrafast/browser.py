@@ -103,7 +103,8 @@ class Browser:
         A page still filling itself in gets up to 3 s: while it is marked busy, and while placeholders remain
         within a second of their last change (see count_placeholders). GitHub's repository sidebar, with its
         Releases link, lands 0.7 s after its placeholders last changed; read before that, the page offered
-        Activity as the nearest thing. Placeholders that stay (YouTube's masthead icons) do not hold it up."""
+        Activity as the nearest thing. Placeholders that appear and stay (YouTube's masthead icons) do not hold it
+        up; YouTube's home page, whose loading skeleton gives way to a grid that stays, waits the full second."""
         started = time.monotonic()
         last, quiet_since = None, started
         while True:
