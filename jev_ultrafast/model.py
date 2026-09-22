@@ -129,6 +129,11 @@ def action_space(actions):
                 for k in ("role", "value", "checked", "selected", "expanded")
                 if k in action
             }
+            if "rect" in action:
+                element["position"] = {
+                    "left": round(action["rect"]["x"]),
+                    "top": round(action["rect"]["y"]),
+                }
             element.update(
                 index=index, label=action["label"].split(" → ")[0], operations=[]
             )
@@ -188,6 +193,9 @@ def choose(state, goal, history):
                         for k in ("role", "checked", "selected", "expanded")
                         if k in a
                     },
+                    **({"position": {
+                        "left": round(a["rect"]["x"]), "top": round(a["rect"]["y"]),
+                    }} if "rect" in a else {}),
                 }
                 for index, a in candidates.items()
             },

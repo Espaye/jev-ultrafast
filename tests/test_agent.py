@@ -121,6 +121,7 @@ def test_target_head_receives_control_state_and_full_next_step_rules(monkeypatch
     p["actions"].insert(0, {
         "id": "toggle", "kind": "click", "label": "Free cancellation", "node": 30,
         "role": "checkbox", "checked": "true", "selected": False,
+        "rect": {"x": 840.4, "y": 20.2, "w": 100, "h": 30},
     })
 
     def post(_url, _key, body):
@@ -128,6 +129,7 @@ def test_target_head_receives_control_state_and_full_next_step_rules(monkeypatch
         target = questions["click_target"]
         assert target["criteria"]["1"]["checked"] == "true"
         assert target["criteria"]["1"]["selected"] is False
+        assert target["criteria"]["1"]["position"] == {"left": 840, "top": 20}
         assert questions["operation"]["instructions"]["rules"] in target["instructions"]["rules"]
         return {
             "model": "test",
@@ -1103,6 +1105,55 @@ def test_clicking_one_control_over_and_over_stops_even_when_the_page_changes(run
     click and CYCLE_REPEATS never fires. A recorded run clicked one such filter eight times."""
     statuses = list(choosing(runner, monkeypatch, ["e3"] * loop.ACTION_REPEATS))
     assert statuses == ["ready"] * (loop.ACTION_REPEATS - 1) + ["blocked"]
+
+
+@pytest.mark.parametrize("wording", [
+    "click on the uppermost recommended quiz",
+    "please click the first result",
+    "could you click this link",
+])
+def test_a_single_click_request_finishes_after_its_click_changes_the_page(runner, monkeypatch, wording):
+    for name in ("ANSWER_MODEL_API_KEY", "HELPER_API_KEY", "TEXT_MODEL_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    destination = deepcopy(page())
+    destination.update(url="https://example.test/opened", title="Opened", text="Opened item")
+    destination["fingerprint"] = fingerprint(destination)
+    runner.state.update(goal=wording, plan=[wording], decision=decision("e3"))
+    runner.state["browser"].observe.return_value = destination
+    runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+    assert runner.state["status"] == "done"
+    assert runner.state["history"][-1]["from_url"] == "https://example.test/"
+    assert runner.state["history"][-1]["url"] == "https://example.test/opened"
+
+
+def test_a_multistep_click_request_does_not_finish_after_its_first_click(runner):
+    destination = deepcopy(page())
+    destination.update(url="https://example.test/opened", title="Opened", text="Opened item")
+    destination["fingerprint"] = fingerprint(destination)
+    request = "click the first quiz and then start it"
+    runner.state.update(goal=request, plan=[request], decision=decision("e3"))
+    runner.state["browser"].observe.return_value = destination
+    runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+    assert runner.state["status"] == "ready"
+
+
+def test_one_click_request_uses_only_the_current_follow_up():
+    goal = loop.follow_up_goal(
+        ["click the first result and then play it (done)"],
+        "click on the uppermost recommended quiz",
+    )
+    assert loop.one_click_request(goal)
+    assert not loop.one_click_request(loop.follow_up_goal([], "click the quiz and then start it"))
+
+
+def test_the_same_navigation_edge_three_times_is_a_loop_even_when_each_page_looks_different():
+    history = [
+        {"kind": "click", "action": "Recommended quiz", "from_url": "https://example.test/a",
+         "url": "https://example.test/b", "from_view": f"different-{i}"}
+        for i in range(loop.NAVIGATION_REPEATS)
+    ]
+    assert loop.repeated_navigation(history)
+    assert not loop.repeated_navigation(history[:-1])
 
 
 def test_one_click_short_of_the_limit_keeps_going(runner, monkeypatch):

@@ -63,6 +63,7 @@ STALE_REPEATS = 2
 # identical consecutive actions in a request that PASSED is two, for clicks and for scrolls alike; failures
 # reach five and eight clicks, and nine, fourteen, sixteen and twenty-six scrolls.
 ACTION_REPEATS = 5
+NAVIGATION_REPEATS = 3
 # Only where repeating one action is never progress. A game presses one arrow all game, a puzzle types letter
 # after letter, and a map plays round after round through the same Next button, so those kinds are left alone.
 GUARDED_KINDS = {"click", "scroll"}
@@ -70,6 +71,32 @@ GUARDED_KINDS = {"click", "scroll"}
 # 2048 ignores an arrow against a wall for good, and Google's search button under an emptied field was
 # clicked three times in a row, which ended a run that typing into the field could still have rescued.
 INERT_KINDS = {"key", "click"}
+
+
+def one_click_request(goal):
+    """A literal, single click request is complete when that click visibly changes the page."""
+    marker = '\nCurrent request ("this" means what the page showed when it was asked; '
+    request = goal.rsplit(marker, 1)[-1]
+    if request != goal:
+        request = request.partition("): ")[2]
+    request = request.strip()
+    starts_with_click = re.match(
+        r"^(?:(?:please|kindly)\s+|(?:can|could|would)\s+you\s+)*click\b", request, re.I
+    )
+    return bool(starts_with_click) and not re.search(r"\b(?:and|then|after|before|also)\b", request, re.I)
+
+
+def repeated_navigation(history):
+    """Catch a changing-page loop even when timers or other dynamic text defeat the view fingerprint."""
+    if not history:
+        return False
+    last = history[-1]
+    if last.get("kind") != "click" or last.get("from_url") == last.get("url"):
+        return False
+    edge = (last.get("from_url"), last.get("url"), last.get("action"))
+    return sum(
+        (h.get("from_url"), h.get("url"), h.get("action")) == edge for h in history
+    ) >= NAVIGATION_REPEATS
 
 
 def view(page, action):
@@ -456,6 +483,7 @@ class Agent:
                     "operation": decision["operation"],
                     "target": decision["target"],
                     "page_changed": None,
+                    "from_url": page["url"],
                     "url": page["url"],
                     "from_view": view(page, action),
                     "usage": decision["usage"],
@@ -482,6 +510,15 @@ class Agent:
                 (self.record_dir / f"{state['elapsed_ms']:06d}.jpg").write_bytes(
                     base64.b64decode(state["page"]["screenshot"])
                 )
+            if (
+                action["kind"] == "click"
+                and state["history"][-1]["page_changed"]
+                and one_click_request(state["goal"])
+            ):
+                say("DONE: the requested click changed the page")
+                state["status"] = "done"
+                state["plan_index"] = len(state["plan"])
+                return self.report()
             repeated = state["history"][-3:]
             # A cycle (home -> article -> home -> ...) changes the page every step, so also stop when the
             # same action runs a third time from a page that looked the same.
@@ -500,10 +537,17 @@ class Agent:
             )
             if hammering:
                 say(f"BLOCKED: {action['label'][:60]!r} was chosen {ACTION_REPEATS} times in a row")
+            navigation_loop = repeated_navigation(state["history"])
+            if navigation_loop:
+                say(
+                    f"BLOCKED: navigation from {state['history'][-1]['from_url'][:80]!r} to "
+                    f"{state['history'][-1]['url'][:80]!r} repeated {NAVIGATION_REPEATS} times"
+                )
             state["status"] = (
                 "blocked"
                 if cycling
                 or hammering
+                or navigation_loop
                 or len(repeated) == 3
                 and all(
                     h["page_changed"] is False and h["kind"] != "wait" for h in repeated

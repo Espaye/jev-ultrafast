@@ -46,7 +46,8 @@ If the needed link or control is not listed, it may be off screen: SCROLL_DOWN t
 TARGET = """Choose the best observed target if the next operation is the one specified in this question.
 Use the user's entire goal, field values, nearby text, and recent actions. This question chooses only
 a target for that operation; another question decides which operation to execute. Do not choose
-a field that already contains the requested value. Choose only an offered element index."""
+a field that already contains the requested value. For a requested screen position, a smaller top value is
+higher and a larger left value is farther right. Choose only an offered element index."""
 
 TEXT_VALUE = """Return a JSON object with exactly one key, text: the exact string to enter in the selected field.
 Infer the value from the original goal and field meaning, using current page context and history.

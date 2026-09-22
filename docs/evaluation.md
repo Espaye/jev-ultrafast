@@ -356,3 +356,28 @@ crossing countdown ticks. JetPunk settled on its independently read scoring page
 countries marked correct and no textbox remaining. This verifies the guarded browser path, not TypeSafe's ability to
 discover those six answers. The offline suite is **145/145**, and the local-browser suite is **28/28**, including a
 fixture that accepts only the active countdown change and still rejects ordinary visible-text changes.
+
+## After this round: one positional recommendation click is one action
+
+**Where this came from.** On JetPunk, the request *“click on the quiz in the recommended quizzes that on the
+right the most upper one”* did not terminate after opening a quiz. A captured run made **20 clicks**: it alternated
+between two quiz URLs and interleaved **Start Quiz**, until the 20-action budget stopped it. The existing repeated
+click guard did not apply because the labels alternated. The view-cycle guard did not apply because each running
+quiz's timer changed the page text used by its fingerprint.
+
+**What changed.** A request that is literally one click (including polite forms such as “please click” and “could
+you click”), with no `and`/`then`/`after`/`before`/`also` continuation, finishes in code after its selected click
+changes the page. This uses TypeSafe's selected observed target and the executor's independently observed page
+change; it does not ask TypeSafe to recognize `DONE` on a destination that contains another similar list. Compound
+requests continue normally. As containment for other changing-page loops, the same named click traversing the same
+source URL → destination URL three times now stops the run.
+
+The target policy also receives each observed element's rounded `left` and `top` screen coordinates. Previously it
+saw labels and linear page text but no geometry, so “top right” was not grounded. On the live destination page,
+without coordinates the first exact run selected the lower **Largest World Cities With Seven Letters** link. With
+coordinates, ten repeated target decisions selected the uppermost other quiz, **Which Letter Has the Highest
+Population?**, **10/10**.
+
+**End-to-end on the user's existing JetPunk target.** The exact request clicked **Which Letter Has the Highest
+Population?**, changed from the *Largest World Cities With Seven Letters* URL to that quiz's URL, and returned
+`done` after **one action**. The offline suite is **151/151**; the local-browser suite remains **28/28**.
