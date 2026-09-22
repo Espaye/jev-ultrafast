@@ -413,7 +413,10 @@ class Agent:
                     return self.report() if stuck else self.snapshot()
                 text = f"{place['place']} ({place['lat']:.2f}, {place['lng']:.2f})"
             elif action["kind"] in {"fill", "keys"}:
-                if not state["browser"].fresh(page):
+                # A textbox has its own identity/value/state guard. Dynamic content elsewhere (for example a
+                # quiz countdown) must not make every text-helper call stale before it can type.
+                freshness_target = action if action["kind"] == "fill" else None
+                if not state["browser"].fresh(page, freshness_target):
                     raise StalePage(
                         "Page changed before text generation. Choose again."
                     )

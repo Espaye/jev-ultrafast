@@ -131,9 +131,21 @@ def main():
         assert value == "Generated", repr(value)
         assert any(a.get("role") == "option" for a in page["actions"])
         passed.append("real text input waits for asynchronous combobox suggestions")
+
         browser.call("Page.navigate", url="about:blank")
         assert not browser.fresh(page, field)
         passed.append("navigation invalidates the old document")
+
+        browser.navigate("data:text/html," + quote(
+            "<div class=active id=timer>2:00</div><label>Country <input id=answer></label>"))
+        page = browser.observe(screenshot=False)
+        answer = next(a for a in page["actions"] if a["kind"] == "fill")
+        browser.evaluate("document.querySelector('#timer').textContent='1:59'")
+        assert browser.fresh(page), "an active countdown tick should not stale a terminal decision"
+        assert browser.fresh(page, answer), "an active countdown tick should not stale its textbox"
+        browser.evaluate("document.querySelector('label').firstChild.textContent='Capital '")
+        assert not browser.fresh(page), "ordinary text changes must still invalidate the page"
+        passed.append("active countdown ticks do not stale decisions; other visible text still does")
 
         browser.navigate("data:text/html," + quote(
             "<title>Keys</title><p>Type here</p><script>window.keys=[];"

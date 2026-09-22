@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -41,11 +42,25 @@ class BrowserGone(RuntimeError):
     """The owned tab was closed or its CDP session detached; only a reset recovers."""
 
 
+ACTIVE_COUNTDOWN = re.compile(r"(?m)^\d{1,3}:[0-5]\d \(active\)$")
+
+
+def stable_marker(marker):
+    """Ignore only a running countdown's tick; every other observed page change remains significant."""
+    if not isinstance(marker, list) or len(marker) < 9 or not isinstance(marker[7], str):
+        return marker
+    return [*marker[:7], ACTIVE_COUNTDOWN.sub("<active countdown>", marker[7]), *marker[8:]]
+
+
 def session_cdp(method, session, **params):
     try:
         return cdp(method, session_id=session, **params)
     except RuntimeError as error:
         message = str(error).lower()
+        if "inspected target navigated or closed" in message:
+            # Chrome can briefly refuse an evaluation while Back swaps renderer processes. The target and its
+            # flattened session remain usable once the new document commits, so normal stale-read retries apply.
+            raise StalePage("Document navigating") from error
         if "session with given id not found" in message or "no session with given id" in message:
             raise BrowserGone(
                 "The agent's browser tab was closed or disconnected. Click Start demo to open a fresh one."
@@ -254,7 +269,7 @@ class Browser:
                 time.sleep(0.02)
 
     def fresh(self, page, action=None):
-        if action is not None and action["kind"] in {"click", "select", "place"}:
+        if action is not None and action["kind"] in {"click", "fill", "select", "place"}:
             node = action["node"]
             if type(node) is not int:
                 return False
@@ -263,7 +278,7 @@ class Browser:
                 f"return c ? [c.pageKey(),c.guard(c.nodes.get({node}))] : null; }})()"
             )
             return current == [page["page_key"], page["guards"].get(str(node))]
-        return self.evaluate(MARKER) == page["marker"]
+        return stable_marker(self.evaluate(MARKER)) == stable_marker(page["marker"])
 
     def screenshot(self):
         """The viewport as JPEG base64, for the map helper that has to see the page. A background tab sometimes

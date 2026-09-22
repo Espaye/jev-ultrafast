@@ -11,7 +11,7 @@ import pytest
 
 from jev_ultrafast import agent as loop
 from jev_ultrafast import model
-from jev_ultrafast.browser import StalePage, browser_operation, fingerprint
+from jev_ultrafast.browser import StalePage, browser_operation, fingerprint, stable_marker
 from jev_ultrafast.console import say
 
 
@@ -290,6 +290,35 @@ def test_executor_rejects_a_stale_page_before_browser_input(monkeypatch):
     with pytest.raises(StalePage):
         b.act(page()["actions"][0], page(), "book")
     operation.assert_not_called()
+
+
+def test_fill_uses_its_target_guard_instead_of_unrelated_page_text():
+    import jev_ultrafast.browser as browser
+
+    b = browser.Browser.__new__(browser.Browser)
+    observed = page()
+    observed.update(page_key=[1, "https://example.test/", 0, 0, 1120, 780, [[10, "", False]]],
+                    guards={"10": [10, "textbox", "Search", "", False]})
+    b.evaluate = Mock(return_value=[observed["page_key"], observed["guards"]["10"]])
+    assert b.fresh(observed, observed["actions"][0])
+
+
+def test_only_an_active_countdown_tick_is_stable():
+    marker = [1, "https://example.test/", 0, 0, 1120, 780, "Quiz", "1:59 (active)\nCountry", []]
+    ticked = [*marker[:7], "1:58 (active)\nCountry", marker[8]]
+    changed = [*marker[:7], "1:58 (active)\nDifferent country", marker[8]]
+    assert stable_marker(ticked) == stable_marker(marker)
+    assert stable_marker(changed) != stable_marker(marker)
+
+
+def test_renderer_swap_during_navigation_is_a_retryable_stale_read(monkeypatch):
+    import jev_ultrafast.browser as browser
+
+    monkeypatch.setattr(browser, "cdp", Mock(side_effect=RuntimeError(
+        {"code": -32000, "message": "Inspected target navigated or closed"}
+    )))
+    with pytest.raises(StalePage, match="Document navigating"):
+        browser.session_cdp("Runtime.evaluate", "session", expression="location.href")
 
 
 @pytest.mark.parametrize("response", [{"exceptionDetails": {}}, {"result": {}}])

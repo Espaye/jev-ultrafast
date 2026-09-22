@@ -335,3 +335,24 @@ Checked in the real inspector page, driven by a script: the GitHub request's clo
 The median does not move, and a stall now ends at about 4 s plus one normal reply. The price is the extra requests, 3 in 50 here, about $0.0015 each.
 
 **Not fixed.** One call in the hedged arm failed in 2.9 s, before any second copy: OpenRouter replied *“google/gemini-3.8-flash is temporarily rate-limited upstream”*, a limit on its shared Google capacity, and the helper's one retry met the same. The run then says it could not read out what happened. It can happen with one request as well, and is not handled here. Separately, this account is held to 20 requests a minute for this model; one answer per run stays far below that.
+
+## After this round: a live countdown does not stale every decision
+
+**Where this came from.** On JetPunk's *Black Sea Countries* quiz, Jev repeatedly refused its own decisions:
+`DONE` became *“Page changed since the decision”*, and the answer textbox became *“Page changed before text
+generation”*. A read-only pair of snapshots from the user's open Chrome tab isolated the change: visible text went
+from `2:00 (active)` to `1:59 (active)`, while the page key, every form value, and the textbox's identity/state guard
+were identical.
+
+**What changed.** Text fields now use their target-specific freshness guard before the text helper as well as at
+execution. A terminal decision still checks the whole page, but a standalone active countdown tick is normalized;
+all other visible text, controls, field values, identity, URL, viewport and scroll position remain significant. A
+Chrome renderer swap seen during a cross-document Back navigation is also treated as the transient stale read it is,
+so the existing retry loop can finish instead of failing the guard suite.
+
+**Measured on the reported page, in the same Chrome profile.** Across a real `2:00` → `1:59` tick, both terminal
+freshness and textbox freshness returned true. Six answers were then entered through `Browser.act`, deliberately
+crossing countdown ticks. JetPunk settled on its independently read scoring page at **6/6 = 100%**, with all six
+countries marked correct and no textbox remaining. This verifies the guarded browser path, not TypeSafe's ability to
+discover those six answers. The offline suite is **145/145**, and the local-browser suite is **28/28**, including a
+fixture that accepts only the active countdown change and still rejects ordinary visible-text changes.
